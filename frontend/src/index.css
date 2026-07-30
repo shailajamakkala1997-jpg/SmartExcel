@@ -1,4 +1,4 @@
-﻿@tailwind base;
+@tailwind base;
 @tailwind components;
 @tailwind utilities;
 
@@ -67,24 +67,32 @@
   border-collapse: separate;
   border-spacing: 0;
   width: 100%;
+  table-layout: auto;
   border: 1px solid var(--border);
+}
+
+/* Ensure STATUS and last column never gets clipped */
+.enterprise-table thead th:last-child,
+.enterprise-table tbody td:last-child {
+  min-width: 110px;
+  border-right: none;
 }
 
 .enterprise-table thead th {
   font-family: var(--font-ui);
-  font-size: 11px;
+  font-size: 10.5px;
   font-weight: 700;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
   color: #FFFFFF;
   background: #009E49;
-  padding: 12px 14px;
+  padding: 10px 8px;
   border-bottom: 2px solid #007D3A;
   border-right: 1px solid rgba(255,255,255,0.15);
   white-space: nowrap;
 }
 
-.enterprise-table thead th:last-child { border-right: none; }
+/* last-child border handled above in the combined rule */
 
 .enterprise-table tbody tr {
   border-bottom: 1px solid var(--border-subtle);
@@ -101,17 +109,17 @@
 
 .enterprise-table tbody td {
   font-family: var(--font-ui);
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 600;
   color: var(--text-primary);
-  padding: 10px 14px;
+  padding: 8px 8px;
   vertical-align: middle;
   white-space: nowrap;
   border-right: 1px solid var(--border-subtle);
   border-bottom: 1px solid var(--border-subtle);
 }
 
-.enterprise-table tbody td:last-child { border-right: none; }
+/* last-child border handled above in the combined rule */
 
 .enterprise-table .mono-cell {
   font-family: var(--font-mono);

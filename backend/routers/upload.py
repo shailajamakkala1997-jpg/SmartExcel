@@ -100,6 +100,10 @@ async def upload_attendance_excel(
         rec_copy["logout_date"] = str(r.get("logout_date", "")) if r.get("logout_date") else ""
         formatted_records.append(rec_copy)
 
+    # Assign clean sequential S.No (1 to N) based on final sorted order
+    for i, rec in enumerate(formatted_records, start=1):
+        rec["NO."] = i
+
     total_records = len(formatted_records)
     unique_emp_set = set()
     for r in formatted_records:

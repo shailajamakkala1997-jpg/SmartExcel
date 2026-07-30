@@ -83,7 +83,8 @@ export default function AttendanceTable({
     if (['date','attendance_date'].includes(colLower))
       return <span className="mono-cell">{rec.attendance_date || rec[colName] || '--'}</span>;
     if (['no.','no','sl no','sl.no','s.no','sr no'].includes(colLower)) {
-      const v = rec[colName] ?? rec['NO.'] ?? rec['No.'] ?? '--';
+      // Use the sequential NO. assigned by backend (1 to N), fallback to other keys
+      const v = rec['NO.'] ?? rec[colName] ?? rec['No.'] ?? '--';
       return <span className="mono-cell" style={{color:'var(--text-muted)'}}>{v}</span>;
     }
     let val = rec[colName];
@@ -104,7 +105,7 @@ export default function AttendanceTable({
   };
 
   return (
-    <div className="panel-raised fade-up" style={{borderRadius: 14, overflow: 'hidden'}}>
+    <div className="panel-raised fade-up" style={{borderRadius: 14}}>
       {/* Ribbon / Toolbar */}
       <div style={{ padding: '14px 18px', background: '#F3F9F4', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>

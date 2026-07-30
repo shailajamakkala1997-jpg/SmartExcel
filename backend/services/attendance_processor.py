@@ -505,8 +505,16 @@ class AttendanceProcessor:
             return [], []
 
         pdf = pd.DataFrame(processed_rows)
-        # CRITICAL PROJECT GOAL: Sort chronologically by employee ID, employee name, and exact datetime!
-        pdf = pdf.sort_values(by=["emp_id", "emp_name", "sort_dt"]).reset_index(drop=True)
+        # CRITICAL PROJECT GOAL: Sort chronologically by employee ID (numeric-safe), employee name, and exact datetime!
+        # Numeric-safe emp_id key: numeric IDs sort as numbers (1,2,10), non-numeric sort alphabetically after
+        def _emp_sort_key_val(eid):
+            try:
+                return (0, int(str(eid).strip()))
+            except (ValueError, TypeError):
+                return (1, str(eid).strip().lower())
+        pdf["_emp_sort_key"] = pdf["emp_id"].apply(_emp_sort_key_val)
+        pdf = pdf.sort_values(by=["_emp_sort_key", "emp_name", "sort_dt"]).reset_index(drop=True)
+        pdf.drop(columns=["_emp_sort_key"], inplace=True)
 
         results = []
         skip_indices = set()
@@ -633,8 +641,16 @@ class AttendanceProcessor:
 
             results.append(rec_dict)
 
-        # Sort final output results chronologically by Date (July 1, 2, 3...), Employee, and Check-in time
+        # Sort final output: Employee first (numeric-safe), then Date ascending, then Check-in time
         def get_sort_key(r):
+            emp_val = r.get("employee_id") or r.get("EMPLOYEE ID") or r.get("employee_name") or ""
+            emp_str = str(emp_val or "").strip()
+            # Numeric-safe: parse as int when possible so "1","2","10" sort as 1,2,10 not 1,10,2
+            try:
+                emp_key = (0, int(emp_str))
+            except (ValueError, TypeError):
+                emp_key = (1, emp_str.lower())
+
             raw_d = r.get("attendance_date") or r.get("DATE") or r.get("Date") or r.get("date") or ""
             date_obj = None
             if isinstance(raw_d, datetime):
@@ -643,16 +659,10 @@ class AttendanceProcessor:
                 date_obj = raw_d
             elif isinstance(raw_d, str) and raw_d.strip() and raw_d.strip() != "--":
                 date_obj = self._normalize_date(raw_d.strip())
-            
-            y_val, m_val, d_val = 1970, 0, 0
+
+            y_val, m_val, d_val = 9999, 0, 0
             if date_obj is not None:
                 y_val, m_val, d_val = date_obj.year, date_obj.month, date_obj.day
-            else:
-                val_s = str(raw_d).strip()
-                match = re.search(r'(\d{1,2})[-/.](\d{1,2})', val_s)
-                if match:
-                    y_val = datetime.now().year
-                    m_val, d_val = int(match.group(1)), int(match.group(2))
 
             t_val = r.get("first_check_in") or r.get("FIRST CHECK IN") or r.get("login") or "00:00"
             sh, sm = 0, 0
@@ -661,10 +671,7 @@ class AttendanceProcessor:
                 if res_parsed[0] is not None:
                     sh, sm = res_parsed[0], res_parsed[1]
 
-            emp_val = r.get("employee_id") or r.get("EMPLOYEE ID") or r.get("employee_name") or ""
-            emp_str = str(emp_val or "").strip()
-
-            return (y_val, m_val, d_val, emp_str, sh, sm, r.get("raw_idx", 0))
+            return (*emp_key, y_val, m_val, d_val, sh, sm)
 
         results.sort(key=get_sort_key)
 
