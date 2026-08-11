@@ -1,0 +1,9 @@
+{
+  "name": "smart-excel",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "npm --prefix frontend run dev",
+    "start": "npm --prefix frontend run dev"
+  }
+}

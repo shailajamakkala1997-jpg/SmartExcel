@@ -1,8 +1,11 @@
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 import pandas as pd
+import numpy as np
 from io import BytesIO
 from datetime import date, datetime
+import math
+import logging
 from database import get_db
 from models import AttendanceRecord, UploadHistory, AuditLog
 from services.attendance_processor import AttendanceProcessor
@@ -10,43 +13,184 @@ from services.sample_generator import generate_sample_attendance_excel
 
 router = APIRouter(prefix="/api", tags=["Upload & Processing"])
 processor = AttendanceProcessor()
+logger = logging.getLogger("smart_excel_upload")
+
+def sanitize_value(v):
+    """Converts any value (including NaN, Inf, NaT, numpy types) to JSON-safe Python primitives."""
+    if v is None:
+        return ""
+    if isinstance(v, (date, datetime)):
+        return str(v)
+    if isinstance(v, float):
+        if math.isnan(v) or math.isinf(v):
+            return 0.0
+        return float(v)
+    if isinstance(v, (int, np.integer)):
+        return int(v)
+    if isinstance(v, (np.floating,)):
+        val = float(v)
+        return 0.0 if (math.isnan(val) or math.isinf(val)) else val
+    if isinstance(v, (bool, np.bool_)):
+        return bool(v)
+    
+    val_str = str(v).strip()
+    if val_str.lower() in ["nan", "none", "nat", "<na>", "null", "undefined"]:
+        return ""
+    return val_str
+
+from typing import Optional
 
 @router.post("/upload")
-async def upload_attendance_excel(
+def upload_attendance_excel(
     file: UploadFile = File(...),
+    total_punches_file: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db)
 ):
-    if not (file.filename.endswith('.xlsx') or file.filename.endswith('.xls')):
-        raise HTTPException(status_code=400, detail="Only .xlsx and .xls Excel files are supported")
+    filename = file.filename or "uploaded_file.xlsx"
+    filename_lower = filename.lower()
 
-    contents = await file.read()
-    excel_file = None
+    # 1. Extension Validation
+    valid_extensions = ('.xlsx', '.xls', '.xlsm', '.csv')
+    if not any(filename_lower.endswith(ext) for ext in valid_extensions):
+        raise HTTPException(
+            status_code=400,
+            detail=f"File '{filename}' is not supported. Please upload an Excel (.xlsx, .xls, .xlsm) or CSV (.csv) file."
+        )
+
+    # 2. Read Main File Contents & Check Zero-Byte File
+    try:
+        contents = file.file.read()
+    except Exception as read_err:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Failed to read uploaded file: {str(read_err)}"
+        )
+
+    if not contents or len(contents) == 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"The file '{filename}' is empty (0 bytes). Please upload a valid attendance file with data."
+        )
+
+    # Read optional total_punches_file if provided
+    tp_contents = None
+    if total_punches_file is not None and total_punches_file.filename:
+        try:
+            tp_contents = total_punches_file.file.read()
+        except Exception as tp_read_err:
+            logger.warning(f"Could not read total_punches_file: {tp_read_err}")
+
     processed_records = []
     excel_columns = []
     df = None
 
     try:
-        engine_opt = 'openpyxl' if file.filename.endswith('.xlsx') else None
-        excel_file = pd.ExcelFile(BytesIO(contents), engine=engine_opt) if engine_opt else pd.ExcelFile(BytesIO(contents))
-        
-        # Aggregate records across all valid sheets in workbook
-        for sheet_name in excel_file.sheet_names:
-            sheet_df = pd.read_excel(excel_file, sheet_name=sheet_name)
-            if sheet_df is not None and not sheet_df.empty:
-                records, cols = processor.process_dataframe(sheet_df)
+        df_raw = None
+        df_punches = None
+
+        # Parse total_punches_file if uploaded separately
+        if tp_contents:
+            try:
+                if total_punches_file.filename.lower().endswith('.csv'):
+                    df_punches = pd.read_csv(BytesIO(tp_contents))
+                else:
+                    tp_excel = pd.ExcelFile(BytesIO(tp_contents))
+                    df_punches = pd.read_excel(tp_excel, sheet_name=0)
+            except Exception as tp_err:
+                logger.warning(f"Error reading total_punches_file: {tp_err}")
+
+        # 3. CSV File Handling
+        if filename_lower.endswith('.csv'):
+            encodings = ['utf-8', 'latin-1', 'cp1252', 'utf-16']
+            csv_df = None
+            for enc in encodings:
+                try:
+                    csv_df = pd.read_csv(BytesIO(contents), encoding=enc, sep=None, engine='python')
+                    break
+                except Exception:
+                    continue
+            
+            if csv_df is None or csv_df.empty:
+                raise HTTPException(status_code=400, detail=f"Could not parse CSV file '{filename}'. Please check delimiter and encoding.")
+            
+            df_raw = csv_df
+            records, cols = processor.process_dataframes(df_raw=df_raw, df_punches=df_punches)
+            if records:
+                processed_records.extend(records)
+                excel_columns = cols
+            df = csv_df
+
+        # 4. Excel File Handling (.xlsx, .xls, .xlsm)
+        else:
+            excel_file = None
+            try:
+                if filename_lower.endswith('.xlsx') or filename_lower.endswith('.xlsm'):
+                    try:
+                        excel_file = pd.ExcelFile(BytesIO(contents), engine='openpyxl')
+                    except Exception:
+                        excel_file = pd.ExcelFile(BytesIO(contents))
+                else:
+                    try:
+                        excel_file = pd.ExcelFile(BytesIO(contents), engine='xlrd')
+                    except Exception:
+                        excel_file = pd.ExcelFile(BytesIO(contents))
+            except Exception as excel_err:
+                err_msg = str(excel_err).lower()
+                if "password" in err_msg or "encrypted" in err_msg:
+                    raise HTTPException(status_code=400, detail="The Excel file is password protected. Please remove password protection and re-upload.")
+                elif "zipfile" in err_msg or "corrupt" in err_msg or "not a valid" in err_msg:
+                    raise HTTPException(status_code=400, detail="The Excel file appears to be corrupted or invalid. Please re-save as a standard .xlsx file.")
+                else:
+                    raise HTTPException(status_code=400, detail=f"Failed to open Excel file '{filename}': {str(excel_err)}")
+
+            # Auto-detect sheets within single workbook
+            if excel_file and excel_file.sheet_names:
+                sheet_names = excel_file.sheet_names
+                sheet_map_lower = {s.lower().strip(): s for s in sheet_names}
+
+                tp_sheet_name = None
+                raw_sheet_name = None
+
+                for s_clean, s_orig in sheet_map_lower.items():
+                    if "total" in s_clean and "punch" in s_clean:
+                        tp_sheet_name = s_orig
+                    elif "raw" in s_clean or "first" in s_clean or "summary" in s_clean:
+                        raw_sheet_name = s_orig
+
+                if df_punches is None and tp_sheet_name:
+                    try:
+                        df_punches = pd.read_excel(excel_file, sheet_name=tp_sheet_name)
+                    except Exception as e:
+                        logger.warning(f"Error reading Total Punches sheet '{tp_sheet_name}': {e}")
+
+                if raw_sheet_name:
+                    try:
+                        df_raw = pd.read_excel(excel_file, sheet_name=raw_sheet_name)
+                    except Exception as e:
+                        logger.warning(f"Error reading Raw Data sheet '{raw_sheet_name}': {e}")
+
+                if df_raw is None and sheet_names:
+                    try:
+                        first_s = [s for s in sheet_names if s != tp_sheet_name][0] if tp_sheet_name and len(sheet_names) > 1 else sheet_names[0]
+                        df_raw = pd.read_excel(excel_file, sheet_name=first_s)
+                    except Exception:
+                        pass
+
+                records, cols = processor.process_dataframes(df_raw=df_raw, df_punches=df_punches)
                 if records:
                     processed_records.extend(records)
-                    for c in cols:
-                        if c not in excel_columns:
-                            excel_columns.append(c)
-                    if df is None:
-                        df = sheet_df
-        
-        if df is None and len(excel_file.sheet_names) > 0:
-            df = pd.read_excel(excel_file, sheet_name=excel_file.sheet_names[0])
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to parse Excel file: {str(e)}")
+                    excel_columns = cols
+                df = df_raw if df_raw is not None else df_punches
 
+    except HTTPException:
+        raise
+    except Exception as gen_err:
+        raise HTTPException(
+            status_code=400,
+            detail=f"An unexpected error occurred while parsing '{filename}': {str(gen_err)}"
+        )
+
+    # 5. Raw Data Fallback if processor returned no records
     if not processed_records:
         if df is not None and not df.empty:
             raw_cols = [str(c).strip() for c in df.columns if not str(c).startswith("Unnamed")]
@@ -54,11 +198,13 @@ async def upload_attendance_excel(
                 rec = {}
                 for col in raw_cols:
                     val = row.get(col)
-                    rec[col] = str(val).strip() if (pd.notna(val) and val is not None and str(val).strip() not in ["nan", "None", "NaT"]) else ""
+                    rec[col] = sanitize_value(val)
                 
-                emp_id = str(row.iloc[0]).strip() if len(row) > 0 and pd.notna(row.iloc[0]) else f"EMP{idx+1:03d}"
-                emp_name = str(row.iloc[1]).strip() if len(row) > 1 and pd.notna(row.iloc[1]) else f"Employee_{idx+1}"
-                
+                emp_id = sanitize_value(row.iloc[0]) if len(row) > 0 else f"EMP{idx+1:03d}"
+                emp_name = sanitize_value(row.iloc[1]) if len(row) > 1 else f"Employee_{idx+1}"
+                if not emp_id: emp_id = f"EMP{idx+1:03d}"
+                if not emp_name: emp_name = f"Employee_{idx+1}"
+
                 rec.update({
                     "employee_id": emp_id,
                     "employee_name": emp_name,
@@ -71,55 +217,60 @@ async def upload_attendance_excel(
                     "last_check_out": "--",
                     "working_hours": "00:00",
                     "working_hours_decimal": 0.0,
+                    "overtime_hours": "00:00",
+                    "overtime_hours_decimal": 0.0,
                     "status": "Present",
-                    "remarks": "Raw record",
+                    "remarks": "Raw record fallback",
                     "is_overnight": False
                 })
                 processed_records.append(rec)
             excel_columns = list(raw_cols)
-            for extra in ["Shift", "Working Hours", "Status"]:
+            for extra in ["Shift", "Working Hours", "Overtime Hours", "Status"]:
                 if extra not in excel_columns:
                     excel_columns.append(extra)
         else:
-            raise HTTPException(status_code=400, detail=f"The uploaded Excel sheet '{file.filename}' is empty.")
+            raise HTTPException(
+                status_code=400,
+                detail=f"No readable attendance records found in '{filename}'. Please ensure the sheet contains data."
+            )
 
-    # In-memory processing (No DB storage required)
+    # 6. Deep JSON Sanitization for all output records
     formatted_records = []
     for r in processed_records:
         rec_copy = {}
         for k, v in r.items():
-            if isinstance(v, (date, datetime)):
-                rec_copy[k] = str(v)
-            elif type(v).__name__ in ('int64', 'int32', 'int16', 'int8', 'integer'):
-                rec_copy[k] = int(v)
-            elif type(v).__name__ in ('float64', 'float32', 'float16', 'floating'):
-                rec_copy[k] = float(v)
-            else:
-                rec_copy[k] = v
+            rec_copy[k] = sanitize_value(v)
         rec_copy["attendance_date"] = str(r.get("attendance_date", ""))
         rec_copy["logout_date"] = str(r.get("logout_date", "")) if r.get("logout_date") else ""
         formatted_records.append(rec_copy)
 
-    # Assign clean sequential S.No (1 to N) based on final sorted order
+    # Assign sequential S.No (1 to N)
     for i, rec in enumerate(formatted_records, start=1):
         rec["NO."] = i
 
     total_records = len(formatted_records)
     unique_emp_set = set()
     for r in formatted_records:
-        emp_key = str(r.get("employee_id") or r.get("employee_name") or r.get("EMPLOYEE ID") or r.get("FIRST NAME") or r.get("raw_idx") or "").strip()
-        if emp_key and emp_key not in ("--", "None", "nan"):
+        emp_key = str(r.get("employee_id") or r.get("employee_name") or r.get("EMPLOYEE ID") or r.get("FIRST NAME") or "").strip()
+        if emp_key and emp_key not in ("--", "None", "nan", "0"):
             unique_emp_set.add(emp_key)
     unique_employees = len(unique_emp_set) if unique_emp_set else total_records
 
-    present_count = sum(1 for r in formatted_records if r.get("status") in ["Present", "Overtime", "Late Login"])
+    present_count = sum(1 for r in formatted_records if any(term in str(r.get("status") or "") for term in ["Present", "Full Day", "Half Day", "Short Hours", "Overtime", "Late"]))
     absent_count = sum(1 for r in formatted_records if r.get("status") == "Absent")
-    night_shift_count = sum(1 for r in formatted_records if r.get("shift") == "C" or r.get("is_overnight", False))
-    late_login_count = sum(1 for r in formatted_records if r.get("status") == "Late Login" or "Late" in (r.get("remarks") or ""))
-    missing_logout_count = sum(1 for r in formatted_records if r.get("status") == "Missing Logout")
-    missing_login_count = sum(1 for r in formatted_records if r.get("status") == "Missing Login")
-    overtime_count = sum(1 for r in formatted_records if r.get("status") == "Overtime" or "Overtime" in (r.get("remarks") or ""))
-    invalid_hours_count = sum(1 for r in formatted_records if r.get("status") == "Invalid Hours")
+    night_shift_count = sum(1 for r in formatted_records if r.get("shift") in ["C", "B1"] or r.get("is_overnight") is True)
+    late_login_count = sum(1 for r in formatted_records if "Late" in str(r.get("status") or "") or "Late" in str(r.get("remarks") or ""))
+    missing_logout_count = sum(1 for r in formatted_records if r.get("status") in ["Missing Logout", "Missing Punch-Out"])
+    missing_login_count = sum(1 for r in formatted_records if r.get("status") in ["Missing Login", "Missing Punch-In"])
+    overtime_count = sum(
+        1 for r in formatted_records
+        if (r.get("overtime_hours") and str(r.get("overtime_hours")).strip() not in ("00:00", "--", "0", "None", ""))
+        or (r.get("overtime_hours_decimal") and float(r.get("overtime_hours_decimal") or 0) > 0)
+        or (r.get("working_hours_decimal") and float(r.get("working_hours_decimal") or 0) > 8.0)
+        or r.get("status") == "Overtime"
+        or "Overtime" in str(r.get("remarks") or "")
+    )
+    invalid_hours_count = sum(1 for r in formatted_records if r.get("status") in ["Invalid Hours", "Short Hours"])
 
     summary = {
         "total_records": total_records,
@@ -137,12 +288,14 @@ async def upload_attendance_excel(
     shifts = {
         "shift_a": sum(1 for r in formatted_records if r.get("shift") == "A"),
         "shift_b": sum(1 for r in formatted_records if r.get("shift") == "B"),
-        "shift_c": sum(1 for r in formatted_records if r.get("shift") == "C")
+        "shift_c": sum(1 for r in formatted_records if r.get("shift") == "C"),
+        "general": sum(1 for r in formatted_records if r.get("shift") == "General"),
+        "shift_b1": sum(1 for r in formatted_records if r.get("shift") == "B1")
     }
 
     return {
         "message": "File processed in memory successfully",
-        "filename": file.filename,
+        "filename": filename,
         "processed_count": total_records,
         "exception_count": sum(1 for r in formatted_records if r.get("status") != "Present"),
         "columns": excel_columns,

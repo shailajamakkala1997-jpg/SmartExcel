@@ -13,8 +13,11 @@ class AttendanceRecordBase(BaseModel):
     shift: str
     first_check_in: Optional[str] = None
     last_check_out: Optional[str] = None
+    single_punch: Optional[str] = "--"
     working_hours: Optional[str] = "00:00"
     working_hours_decimal: float = 0.0
+    overtime_hours: Optional[str] = "00:00"
+    overtime_hours_decimal: float = 0.0
     status: str
     remarks: Optional[str] = ""
     is_overnight: bool = False
@@ -41,10 +44,13 @@ class SummaryMetrics(BaseModel):
     missing_login: int
     overtime: int
     invalid_hours: int
+    needs_manual_review: int = 0
 
 class ShiftBreakdown(BaseModel):
     shift_a: int
+    shift_general: int = 0
     shift_b: int
+    shift_b1: int = 0
     shift_c: int
 
 class ChartDataPoint(BaseModel):

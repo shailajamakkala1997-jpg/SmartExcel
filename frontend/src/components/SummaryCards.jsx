@@ -1,15 +1,15 @@
 import React from 'react';
-import { Users, UserCheck, Moon, AlertTriangle, Clock, TrendingUp, Sun, Briefcase } from 'lucide-react';
+import { Users, UserCheck, Moon, AlertTriangle, Clock, Sun, Briefcase } from 'lucide-react';
 
 const KPI_DEFS = [
-  { id: 'ALL',            label: 'Total Records',    sub: 'Processed Rows',     icon: Briefcase,     key: 'total_records',   accent: '#009E49' },
-  { id: 'Present',        label: 'Present',          sub: 'Completed Shifts',   icon: UserCheck,     key: 'present',         accent: '#00873D' },
-  { id: 'Shift A',        label: 'Shift A (Day)',    sub: '06:00 - 14:00',      icon: Sun,           key: 'shift_a',         accent: '#1E40AF' },
-  { id: 'Shift B',        label: 'Shift B (Eve)',    sub: '14:00 - 22:00',      icon: Clock,         key: 'shift_b',         accent: '#7B1FA2' },
-  { id: 'Shift C',        label: 'Shift C (Night)',  sub: '22:00 - 06:00',      icon: Moon,          key: 'shift_c',         accent: '#00873D' },
-  { id: 'Late Login',     label: 'Late Login',        sub: 'Beyond Margin',      icon: Clock,         key: 'late_login',      accent: '#D97706' },
-  { id: 'Missing Logout', label: 'Missing Logout',    sub: 'Checkout Missing',   icon: AlertTriangle, key: 'missing_logout',  accent: '#DC2626' },
-  { id: 'Overtime',       label: 'Overtime',          sub: 'Worked > 8.5 hrs',   icon: TrendingUp,    key: 'overtime',        accent: '#00873D' },
+  { id: 'ALL',                 label: 'Total Records',    sub: 'Processed Rows',     icon: Briefcase,     key: 'total_records',        accent: '#009E49' },
+  { id: 'Present',             label: 'Present',          sub: 'Completed Shifts',   icon: UserCheck,     key: 'present',              accent: '#00873D' },
+  { id: 'Shift A',             label: 'Shift A (Day)',    sub: '06:00 - 14:00',      icon: Sun,           key: 'shift_a',              accent: '#1E40AF' },
+  { id: 'General',             label: 'General Shift',    sub: '09:00 - 17:30',      icon: Sun,           key: 'shift_general',        accent: '#D97706' },
+  { id: 'Shift B',             label: 'Shift B (Eve)',    sub: '14:00 - 22:00',      icon: Clock,         key: 'shift_b',              accent: '#7B1FA2' },
+  { id: 'Shift B1',            label: 'Shift B1 (Late)',  sub: '17:30 - 06:00',      icon: Clock,         key: 'shift_b1',             accent: '#3730A3' },
+  { id: 'Shift C',             label: 'Shift C (Night)',  sub: '22:00 - 06:00',      icon: Moon,          key: 'shift_c',              accent: '#00873D' },
+  { id: 'Needs Manual Review', label: 'Manual Review',    sub: 'Single Punch',       icon: AlertTriangle, key: 'needs_manual_review',  accent: '#DC2626' },
 ];
 
 export default function SummaryCards({ metrics, activeStatusFilter, onSelectStatusFilter }) {

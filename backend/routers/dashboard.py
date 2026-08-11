@@ -20,8 +20,16 @@ def get_dashboard_summary(db: Session = Depends(get_db)):
     late_login_count = sum(1 for r in records if r.status == "Late Login" or "Late" in (r.remarks or ""))
     missing_logout_count = sum(1 for r in records if r.status == "Missing Logout")
     missing_login_count = sum(1 for r in records if r.status == "Missing Login")
-    overtime_count = sum(1 for r in records if r.status == "Overtime" or "Overtime" in (r.remarks or ""))
+    overtime_count = sum(
+        1 for r in records
+        if (r.overtime_hours and str(r.overtime_hours).strip() not in ("00:00", "--", "0", "None", ""))
+        or (r.overtime_hours_decimal and float(r.overtime_hours_decimal) > 0)
+        or (r.working_hours_decimal and float(r.working_hours_decimal) > 8.0)
+        or r.status == "Overtime"
+        or "Overtime" in (r.remarks or "")
+    )
     invalid_hours_count = sum(1 for r in records if r.status == "Invalid Hours")
+    needs_manual_review_count = sum(1 for r in records if r.status == "Needs Manual Review")
 
     summary = SummaryMetrics(
         total_records=total_records,
@@ -33,17 +41,22 @@ def get_dashboard_summary(db: Session = Depends(get_db)):
         missing_logout=missing_logout_count,
         missing_login=missing_login_count,
         overtime=overtime_count,
-        invalid_hours=invalid_hours_count
+        invalid_hours=invalid_hours_count,
+        needs_manual_review=needs_manual_review_count
     )
 
     # Shift Breakdown
-    shift_a = sum(1 for r in records if r.shift == "A")
-    shift_b = sum(1 for r in records if r.shift == "B")
-    shift_c = sum(1 for r in records if r.shift == "C")
+    shift_a = sum(1 for r in records if r.shift in ("A", "1"))
+    shift_general = sum(1 for r in records if r.shift in ("General", "GENERAL", "4"))
+    shift_b = sum(1 for r in records if r.shift in ("B", "2"))
+    shift_b1 = sum(1 for r in records if r.shift in ("B1", "5"))
+    shift_c = sum(1 for r in records if r.shift in ("C", "3") or r.is_overnight)
 
     shifts = ShiftBreakdown(
         shift_a=shift_a,
+        shift_general=shift_general,
         shift_b=shift_b,
+        shift_b1=shift_b1,
         shift_c=shift_c
     )
 

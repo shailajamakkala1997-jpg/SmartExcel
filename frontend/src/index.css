@@ -143,15 +143,19 @@
   white-space: nowrap;
 }
 
-.badge-present  { background: #DFF6E6; color: #007334; border: 1px solid #B3E6C4; }
-.badge-late     { background: #FEF3C7; color: #92400E; border: 1px solid #FDE68A; }
-.badge-overtime { background: #F3E8FF; color: #6B21A8; border: 1px solid #E9D5FF; }
-.badge-missing  { background: #FEE2E2; color: #991B1B; border: 1px solid #FECACA; }
-.badge-absent   { background: #F1F5F9; color: #475569; border: 1px solid #E2E8F0; }
+.badge-present        { background: #DFF6E6; color: #007334; border: 1px solid #B3E6C4; }
+.badge-late           { background: #FEF3C7; color: #92400E; border: 1px solid #FDE68A; }
+.badge-overtime       { background: #F3E8FF; color: #6B21A8; border: 1px solid #E9D5FF; }
+.badge-missing        { background: #FEE2E2; color: #991B1B; border: 1px solid #FECACA; }
+.badge-absent         { background: #F1F5F9; color: #475569; border: 1px solid #E2E8F0; }
+.badge-manual-review  { background: #FEE2E2; color: #991B1B; border: 1px solid #FCA5A5; font-weight: 600; }
+.badge-punch-status   { background: #FFF7ED; color: #C2410C; border: 1px solid #FFEDD5; font-weight: 500; }
 
-.badge-shift-a  { background: #DBEAFE; color: #1E40AF; border: 1px solid #BFDBFE; }
-.badge-shift-b  { background: #F3E8FF; color: #6B21A8; border: 1px solid #E9D5FF; }
-.badge-shift-c  { background: #DFF6E6; color: #007334; border: 1px solid #B3E6C4; }
+.badge-shift-a    { background: #DBEAFE; color: #1E40AF; border: 1px solid #BFDBFE; }
+.badge-shift-gen  { background: #FEF3C7; color: #92400E; border: 1px solid #FDE68A; }
+.badge-shift-b    { background: #F3E8FF; color: #6B21A8; border: 1px solid #E9D5FF; }
+.badge-shift-b1   { background: #E0E7FF; color: #3730A3; border: 1px solid #C7D2FE; }
+.badge-shift-c    { background: #DFF6E6; color: #007334; border: 1px solid #B3E6C4; }
 
 /* ─── KPI Cards ───────────────────────────────────── */
 .kpi-card {
@@ -226,6 +230,10 @@
   transform: translateY(-1px);
 }
 
+.btn-primary:active {
+  transform: scale(0.96) !important;
+}
+
 .btn-primary:disabled { opacity: 0.5; pointer-events: none; }
 
 .btn-ghost {
@@ -241,13 +249,17 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  transition: background 0.15s, color 0.15s, border-color 0.15s, transform 0.1s;
 }
 
 .btn-ghost:hover {
   background: #EBF5ED;
   color: #00873D;
   border-color: #009E49;
+}
+
+.btn-ghost:active {
+  transform: scale(0.96) !important;
 }
 
 .btn-export {
@@ -264,7 +276,7 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  transition: background 0.15s, box-shadow 0.15s;
+  transition: background 0.15s, box-shadow 0.15s, transform 0.1s;
   text-transform: uppercase;
   box-shadow: 0 4px 12px rgba(0, 135, 61, 0.25);
 }
@@ -272,6 +284,11 @@
 .btn-export:hover {
   background: #007334;
   box-shadow: 0 6px 16px rgba(0, 115, 52, 0.35);
+  transform: translateY(-1px);
+}
+
+.btn-export:active {
+  transform: scale(0.96) !important;
 }
 
 /* ─── Pagination ──────────────────────────────────── */

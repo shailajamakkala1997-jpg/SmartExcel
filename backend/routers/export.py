@@ -83,7 +83,7 @@ def export_csv(
 
     writer.writerow([
         "Employee ID", "Employee Name", "Department", "Date", "Day",
-        "Shift", "First Check In", "Last Check Out", "Working Hours", "Status", "Remarks"
+        "Shift", "First Check In", "Last Check Out", "SINGLE PUNCH", "Working Hours", "Overtime Hours", "Status", "Remarks"
     ])
 
     for r in records:
@@ -91,7 +91,8 @@ def export_csv(
             r.employee_id, r.employee_name, r.department or "General",
             str(r.attendance_date), r.weekday or "", r.shift,
             r.first_check_in or "--", r.last_check_out or "--",
-            r.working_hours or "00:00", r.status, r.remarks or ""
+            getattr(r, "single_punch", "--") or "--",
+            r.working_hours or "00:00", getattr(r, "overtime_hours", "00:00") or "00:00", r.status, r.remarks or ""
         ])
 
     return Response(

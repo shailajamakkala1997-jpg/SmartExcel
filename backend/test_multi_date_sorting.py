@@ -1,4 +1,4 @@
-﻿import pandas as pd
+import pandas as pd
 from services.attendance_processor import AttendanceProcessor
 
 proc = AttendanceProcessor()
@@ -17,6 +17,6 @@ results, columns = proc.process_dataframe(df_mixed)
 output_dates = [str(r.get('attendance_date')) for r in results]
 print('Output Date Sequence:', output_dates)
 
-expected = ['2026-06-01', '2026-06-02', '2026-06-03', '2026-06-05']
+expected = ['2026-06-01', '2026-06-02', '2026-06-03', '2026-06-04', '2026-06-05']
 assert output_dates == expected, f'Expected {expected}, got {output_dates}'
-print('PASSED! Multi-date output is sorted chronologically 100%!')
+print('PASSED! Multi-date output is sorted chronologically with date skeleton 100%!')

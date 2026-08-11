@@ -8,8 +8,22 @@ from services.attendance_processor import AttendanceProcessor
 import pandas as pd
 from io import BytesIO
 
-# Initialize tables
+from sqlalchemy import inspect, text
+
+# Initialize tables & auto-migrate missing columns
 Base.metadata.create_all(bind=engine)
+try:
+    inspector = inspect(engine)
+    if "attendance_records" in inspector.get_table_names():
+        columns = [c["name"] for c in inspector.get_columns("attendance_records")]
+        with engine.connect() as conn:
+            if "overtime_hours" not in columns:
+                conn.execute(text("ALTER TABLE attendance_records ADD COLUMN overtime_hours VARCHAR(10) DEFAULT '00:00';"))
+            if "overtime_hours_decimal" not in columns:
+                conn.execute(text("ALTER TABLE attendance_records ADD COLUMN overtime_hours_decimal FLOAT DEFAULT 0.0;"))
+            conn.commit()
+except Exception as e:
+    print(f"[DB MIGRATION NOTICE] {e}")
 
 app = FastAPI(
     title="Smart Attendance Processing API",
@@ -48,4 +62,4 @@ def read_root():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+    uvicorn.run("main:app", host="127.0.0.1", port=8005, reload=True)

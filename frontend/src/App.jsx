@@ -4,7 +4,7 @@ import SummaryCards from './components/SummaryCards';
 import AttendanceTable from './components/AttendanceTable';
 import UploadModal from './components/UploadModal';
 import axios from 'axios';
-import { Upload, FileSpreadsheet, ArrowRight } from 'lucide-react';
+import { Upload, FileSpreadsheet, ArrowRight, CheckCircle2, RefreshCw, X } from 'lucide-react';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
@@ -17,6 +17,8 @@ export default function App() {
   const [excelColumns, setExcelColumns] = useState([]);
   const [uploadedFileName, setUploadedFileName] = useState('');
   const [loading, setLoading] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [exportToast, setExportToast] = useState(null);
 
   // Filters State
   const [searchTerm, setSearchTerm] = useState('');
@@ -47,11 +49,51 @@ export default function App() {
         if (!matchesAnyField) return false;
       }
       if (selectedShift !== 'ALL' && r.shift !== selectedShift) return false;
-      if (selectedStatus !== 'ALL' && r.status !== selectedStatus) return false;
       if (selectedDept !== 'ALL' && r.department !== selectedDept) return false;
+
+      if (selectedStatus !== 'ALL') {
+        if (selectedStatus === 'Present') {
+          const st = String(r.status || '');
+          if (!st.includes('Present') && !st.includes('Full Day') && !st.includes('Half Day') && !st.includes('Overtime') && !st.includes('Late') && !st.includes('Short Hours')) return false;
+        } else if (selectedStatus === 'Late Login') {
+          if (r.status !== 'Late Login' && !(r.remarks && String(r.remarks).includes('Late'))) return false;
+        } else if (selectedStatus === 'Overtime') {
+          const otStr = r.overtime_hours || r['Overtime Hours'] || r['OVERTIME HOURS'] || r.overtime || '';
+          const otDec = Number(r.overtime_hours_decimal || 0);
+          const whDec = Number(r.working_hours_decimal || 0);
+          const isOtTime = otStr && otStr !== '00:00' && otStr !== '--' && otStr !== '0';
+          if (!isOtTime && otDec <= 0 && whDec <= 8.0 && r.status !== 'Overtime' && !(r.remarks && String(r.remarks).includes('Overtime'))) return false;
+        } else {
+          if (r.status !== selectedStatus) return false;
+        }
+      }
       return true;
     });
   }, [allProcessedRecords, searchTerm, selectedShift, selectedStatus, selectedDept]);
+
+  // Active KPI card highlighting
+  const activeKpiFilter = useMemo(() => {
+    if (selectedShift === 'A') return 'Shift A';
+    if (selectedShift === 'General') return 'General';
+    if (selectedShift === 'B') return 'Shift B';
+    if (selectedShift === 'B1') return 'Shift B1';
+    if (selectedShift === 'C') return 'Shift C';
+    if (selectedStatus !== 'ALL') return selectedStatus;
+    return 'ALL';
+  }, [selectedShift, selectedStatus]);
+
+  // Human-readable label for the current active filter (used on export button + filename)
+  const activeFilterLabel = useMemo(() => {
+    if (searchTerm && searchTerm.trim()) return `Search: ${searchTerm.trim()}`;
+    if (selectedShift === 'A') return 'Shift A';
+    if (selectedShift === 'General') return 'General Shift';
+    if (selectedShift === 'B') return 'Shift B';
+    if (selectedShift === 'B1') return 'Shift B1';
+    if (selectedShift === 'C') return 'Shift C (Night)';
+    if (selectedStatus === 'Needs Manual Review') return 'Manual Review';
+    if (selectedStatus !== 'ALL') return selectedStatus;
+    return null; // no active filter = export all
+  }, [selectedShift, selectedStatus, searchTerm]);
 
   // Compute dashboard summary in memory
   const dashboardData = useMemo(() => {
@@ -67,23 +109,35 @@ export default function App() {
     });
     const total_employees = uniqueEmpSet.size || total_records;
 
-    const present = allProcessedRecords.filter(r => ['Present', 'Overtime', 'Late Login'].includes(r.status)).length;
+    const present = allProcessedRecords.filter(r => {
+      const st = String(r.status || '');
+      return st.includes('Present') || st.includes('Overtime') || st.includes('Late') || st.includes('Short Hours') || st.includes('Full Day') || st.includes('Half Day');
+    }).length;
     const absent = allProcessedRecords.filter(r => r.status === 'Absent').length;
-    const shift_a = allProcessedRecords.filter(r => r.shift === 'A').length;
-    const shift_b = allProcessedRecords.filter(r => r.shift === 'B').length;
-    const shift_c = allProcessedRecords.filter(r => r.shift === 'C' || r.is_overnight).length;
-    const late_login = allProcessedRecords.filter(r => r.status === 'Late Login' || (r.remarks && r.remarks.includes('Late'))).length;
+    const shift_a = allProcessedRecords.filter(r => r.shift === 'A' || r.shift === '1').length;
+    const shift_general = allProcessedRecords.filter(r => r.shift === 'General' || r.shift === '4').length;
+    const shift_b = allProcessedRecords.filter(r => r.shift === 'B' || r.shift === '2').length;
+    const shift_b1 = allProcessedRecords.filter(r => r.shift === 'B1' || r.shift === '5').length;
+    const shift_c = allProcessedRecords.filter(r => r.shift === 'C' || r.shift === '3' || r.is_overnight).length;
+    const late_login = allProcessedRecords.filter(r => r.status === 'Late Login' || (r.remarks && String(r.remarks).includes('Late'))).length;
     const missing_logout = allProcessedRecords.filter(r => r.status === 'Missing Logout').length;
     const missing_login = allProcessedRecords.filter(r => r.status === 'Missing Login').length;
-    const overtime = allProcessedRecords.filter(r => r.status === 'Overtime' || (r.remarks && r.remarks.includes('Overtime'))).length;
+    const needs_manual_review = allProcessedRecords.filter(r => r.status === 'Needs Manual Review').length;
+    const overtime = allProcessedRecords.filter(r => {
+      const otStr = r.overtime_hours || r['Overtime Hours'] || r['OVERTIME HOURS'] || r.overtime || '';
+      const otDec = Number(r.overtime_hours_decimal || 0);
+      const whDec = Number(r.working_hours_decimal || 0);
+      const isOtTime = otStr && otStr !== '00:00' && otStr !== '--' && otStr !== '0';
+      return isOtTime || otDec > 0 || whDec > 8.0 || r.status === 'Overtime' || (r.remarks && String(r.remarks).includes('Overtime'));
+    }).length;
 
     return {
       summary: {
         total_records, total_employees, present, absent,
-        shift_a, shift_b, shift_c,
-        late_login, missing_logout, missing_login, overtime
+        shift_a, shift_general, shift_b, shift_b1, shift_c,
+        late_login, missing_logout, missing_login, needs_manual_review, overtime
       },
-      shifts: { shift_a, shift_b, shift_c }
+      shifts: { shift_a, shift_general, shift_b, shift_b1, shift_c }
     };
   }, [allProcessedRecords]);
 
@@ -91,8 +145,14 @@ export default function App() {
     if (cardId === 'Shift A') {
       setSelectedShift('A');
       setSelectedStatus('ALL');
+    } else if (cardId === 'General') {
+      setSelectedShift('General');
+      setSelectedStatus('ALL');
     } else if (cardId === 'Shift B') {
       setSelectedShift('B');
+      setSelectedStatus('ALL');
+    } else if (cardId === 'Shift B1') {
+      setSelectedShift('B1');
       setSelectedStatus('ALL');
     } else if (cardId === 'Shift C' || cardId === 'Night Shift') {
       setSelectedShift('C');
@@ -128,6 +188,9 @@ export default function App() {
       return;
     }
 
+    setExporting(true);
+    setExportToast(null);
+
     try {
       const response = await axios.post('/api/export/excel-direct', {
         records: targetRecords,
@@ -136,36 +199,85 @@ export default function App() {
         responseType: 'blob'
       });
 
-      const prefix = scope === 'full' ? 'Full' : 'Filtered';
-      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const cleanBaseName = uploadedFileName ? uploadedFileName.replace(/\.[^/.]+$/, '') : 'Attendance_Report';
+      // Build a descriptive file name that includes the active filter
+      let filterTag;
+      if (scope === 'full') {
+        filterTag = 'Full';
+      } else if (activeFilterLabel) {
+        filterTag = activeFilterLabel.replace(/[^a-zA-Z0-9]/g, '_'); // safe for filenames
+      } else {
+        filterTag = 'Filtered';
+      }
+      const fileName = `${filterTag}_${cleanBaseName}.xlsx`;
+      
+      const blob = new Blob([response.data], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const url = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
+      link.style.display = 'none';
       link.href = url;
-      link.setAttribute('download', `${prefix}_Attendance_${uploadedFileName || 'Report'}.xlsx`);
+      link.setAttribute('download', fileName);
       document.body.appendChild(link);
       link.click();
-      link.remove();
+
+      setTimeout(() => {
+        if (document.body.contains(link)) {
+          document.body.removeChild(link);
+        }
+        window.URL.revokeObjectURL(url);
+      }, 3000);
+
+      setExporting(false);
+      const filterDesc = scope === 'full' ? 'all records' : (activeFilterLabel ? `"${activeFilterLabel}" filter` : 'filtered view');
+      setExportToast({
+        title: 'Excel Download Initiated!',
+        message: `Generated '${fileName}' with ${targetRecords.length} records (${filterDesc}). Check your Downloads folder!`
+      });
+
+      setTimeout(() => {
+        setExportToast(null);
+      }, 5000);
     } catch (err) {
-      console.error("Export error:", err);
-      alert("Failed to export Excel file. Please try again.");
+      console.error('Export error:', err);
+      setExporting(false);
+      alert('Failed to export Excel file. Please try again.');
     }
   };
-
-  // Chart Data preparation
-  const pieData = (dashboardData && dashboardData.shifts) ? [
-    { name: 'Shift A (06:00-14:00)', value: dashboardData.shifts.shift_a || 0, color: '#3B82F6' },
-    { name: 'Shift B (14:00-22:00)', value: dashboardData.shifts.shift_b || 0, color: '#A855F7' },
-    { name: 'Shift C (Night 22:00-06:00)', value: dashboardData.shifts.shift_c || 0, color: '#6366F1' },
-  ] : [];
 
   const hasData = allProcessedRecords.length > 0;
 
   return (
-    <div style={{ minHeight: '100vh', background: 'var(--bg-base)', color: 'var(--text-primary)', fontFamily: 'var(--font-ui)' }}>
+    <div style={{ minHeight: '100vh', background: 'var(--bg-base)', color: 'var(--text-primary)', fontFamily: 'var(--font-ui)', position: 'relative' }}>
+
+      {/* Floating Download Toast Notification */}
+      {exportToast && (
+        <div className="fade-up" style={{
+          position: 'fixed', top: 20, right: 24, zIndex: 100,
+          background: '#007334', color: '#FFFFFF',
+          padding: '14px 20px', borderRadius: 10,
+          boxShadow: '0 10px 30px rgba(0, 115, 52, 0.35)',
+          display: 'flex', alignItems: 'center', gap: 12,
+          border: '1px solid #69F0AE', maxWidth: 420
+        }}>
+          <div style={{ width: 32, height: 32, borderRadius: '50%', background: 'rgba(255,255,255,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+            <CheckCircle2 style={{ width: 18, height: 18, color: '#FFFFFF' }} />
+          </div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 13, fontWeight: 800, color: '#FFFFFF' }}>{exportToast.title}</div>
+            <div style={{ fontSize: 11, color: '#EBF5ED', marginTop: 2 }}>{exportToast.message}</div>
+          </div>
+          <button onClick={() => setExportToast(null)} style={{ background: 'none', border: 'none', color: '#FFFFFF', cursor: 'pointer', padding: 4 }}>
+            <X style={{ width: 14, height: 14 }} />
+          </button>
+        </div>
+      )}
 
       <Navbar
         onOpenUpload={() => setIsUploadOpen(true)}
         onExport={handleExport}
         hasData={hasData}
+        exporting={exporting}
+        activeFilterLabel={activeFilterLabel}
       />
 
       <main style={{ maxWidth: 1600, margin: '0 auto', padding: '28px 24px' }}>
@@ -197,7 +309,7 @@ export default function App() {
             {dashboardData && (
               <SummaryCards
                 metrics={dashboardData.summary}
-                activeStatusFilter={selectedStatus === 'ALL' && selectedShift === 'C' ? 'Night Shift' : selectedStatus}
+                activeStatusFilter={activeKpiFilter}
                 onSelectStatusFilter={handleStatusCardSelect}
               />
             )}
@@ -215,10 +327,12 @@ export default function App() {
               setSelectedStatus={setSelectedStatus}
               selectedDept={selectedDept}
               setSelectedDept={setSelectedDept}
-              onRefresh={() => {}}
+              onRefresh={() => { }}
               onUpdateRecord={handleUpdateRecord}
               onDeleteRecord={handleDeleteRecord}
               onExport={handleExport}
+              exporting={exporting}
+              activeFilterLabel={activeFilterLabel}
             />
           </>
         )}

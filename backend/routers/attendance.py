@@ -61,14 +61,16 @@ def update_attendance_record(
     if remarks is not None:
         record.remarks = remarks
 
-    # Recalculate working hours if punches updated
+    # Recalculate working hours & overtime if punches updated
     if record.first_check_in and record.last_check_out:
         from services.attendance_processor import AttendanceProcessor
         proc = AttendanceProcessor()
-        wh_str, dec_hrs, is_overnight = proc.calculate_working_hours(record.first_check_in, record.last_check_out)
+        wh_str, dec_hrs, is_overnight, ot_str, ot_dec = proc.calculate_working_hours(record.first_check_in, record.last_check_out)
         record.working_hours = wh_str
         record.working_hours_decimal = dec_hrs
         record.is_overnight = is_overnight
+        record.overtime_hours = ot_str
+        record.overtime_hours_decimal = ot_dec
 
     db.commit()
     db.refresh(record)

@@ -17,8 +17,11 @@ class AttendanceRecord(Base):
     shift = Column(String(10), index=True)  # Shift A, B, C
     first_check_in = Column(String(10), nullable=True)
     last_check_out = Column(String(10), nullable=True)
+    single_punch = Column(String(10), nullable=True)
     working_hours = Column(String(10), nullable=True)  # Format: "08:20"
     working_hours_decimal = Column(Float, default=0.0)  # Format: 8.33
+    overtime_hours = Column(String(10), nullable=True, default="00:00")  # Format: "00:13"
+    overtime_hours_decimal = Column(Float, default=0.0)  # Format: 0.22
     status = Column(String(50), index=True)  # Present, Missing Logout, Missing Login, Overtime, Late Login, Error
     remarks = Column(Text, nullable=True)
     is_overnight = Column(Boolean, default=False)
