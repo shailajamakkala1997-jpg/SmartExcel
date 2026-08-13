@@ -137,8 +137,62 @@ class AttendanceExporter:
         """
         Aggregate already-processed daily records into one row per employee.
         Returns list of dicts with Monthly Summary columns, sorted by Employee ID.
+        Only records belonging to the primary attendance month are aggregated to prevent
+        cross-month leakage (e.g. Aug 1 day-shift records inflating July total days to 32).
+        Overnight shifts starting in July with logout on Aug 1 remain attendance_date=July 31
+        and are fully preserved in the July summary.
         """
-        from collections import defaultdict
+        from collections import defaultdict, Counter
+
+        # Extract primary attendance date from each record
+        def extract_date(rec):
+            d = None
+            if isinstance(rec, dict):
+                d = rec.get("attendance_date") or rec.get("date") or rec.get("DATE") or rec.get("Date") or rec.get("Attendance Date")
+            else:
+                d = getattr(rec, "attendance_date", None) or getattr(rec, "date", None)
+
+            if d is None or str(d).strip() in ("", "--", "None", "nan"):
+                d = cls._get_val(rec, "attendance_date") or cls._get_val(rec, "date")
+
+            if d is None or str(d).strip() in ("", "--", "None", "nan"):
+                return None
+
+            if isinstance(d, date) and not isinstance(d, datetime):
+                return d
+            if isinstance(d, datetime):
+                return d.date()
+
+            d_str = str(d).strip()
+            if " " in d_str:
+                d_str = d_str.split()[0]
+
+            for fmt in (
+                "%Y-%m-%d", "%d-%m-%Y", "%m/%d/%Y", "%d/%m/%Y", "%Y/%m/%d",
+                "%d.%m.%Y", "%Y.%m.%d", "%d-%b-%Y", "%d-%B-%Y", "%Y%m%d",
+                "%d%m%Y", "%d-%m-%y", "%d/%m/%y", "%d.%m.%y",
+            ):
+                try:
+                    return datetime.strptime(d_str, fmt).date()
+                except ValueError:
+                    pass
+
+            try:
+                import pandas as pd
+                dt = pd.to_datetime(d_str, dayfirst=True)
+                if not pd.isna(dt):
+                    return dt.date()
+            except Exception:
+                pass
+
+            return None
+
+        # Determine primary target month (year, month) across all records
+        all_att_dates = [extract_date(r) for r in records if extract_date(r) is not None]
+        if all_att_dates:
+            primary_ym = Counter((d.year, d.month) for d in all_att_dates).most_common(1)[0][0]
+        else:
+            primary_ym = None
 
         groups = defaultdict(list)
         for rec in records:
@@ -150,30 +204,10 @@ class AttendanceExporter:
             )
             groups[str(emp_id).strip()].append(rec)
 
-        # Build global date span
-        all_dates = []
-        for rec in records:
-            raw_d = (
-                cls._get_val(rec, "attendance_date")
-                or cls._get_val(rec, "date")
-                or (rec.get("attendance_date") if isinstance(rec, dict) else getattr(rec, "attendance_date", None))
-            )
-            if raw_d is None or str(raw_d).strip() in ("", "--", "None", "nan"):
-                continue
-            if isinstance(raw_d, date) and not isinstance(raw_d, datetime):
-                all_dates.append(raw_d)
-            elif isinstance(raw_d, datetime):
-                all_dates.append(raw_d.date())
-            else:
-                try:
-                    import pandas as pd
-                    parsed = pd.to_datetime(str(raw_d)).date()
-                    all_dates.append(parsed)
-                except Exception:
-                    pass
-
-        global_min = min(all_dates) if all_dates else None
-        global_max = max(all_dates) if all_dates else None
+        # Global date span scoped to primary month
+        global_dates = [d for d in all_att_dates if (primary_ym is None or (d.year, d.month) == primary_ym)]
+        global_min = min(global_dates) if global_dates else (min(all_att_dates) if all_att_dates else None)
+        global_max = max(global_dates) if global_dates else (max(all_att_dates) if all_att_dates else None)
         total_days_global = (global_max - global_min).days + 1 if (global_min and global_max) else 0
 
         summary_rows = []
@@ -191,38 +225,33 @@ class AttendanceExporter:
             emp_name = first_val("employee_name") or first_val("First Name") or first_val("FIRST NAME")
             gender   = first_val("gender")
 
-            # Per-employee calendar span
+            # Per-employee calendar span scoped to primary month
             emp_dates = []
+            scoped_rows = []
             for rec in rows:
-                raw_d = (
-                    cls._get_val(rec, "attendance_date")
-                    or cls._get_val(rec, "date")
-                    or (rec.get("attendance_date") if isinstance(rec, dict) else getattr(rec, "attendance_date", None))
-                )
-                if raw_d is None or str(raw_d).strip() in ("", "--", "None", "nan"):
+                rec_date = extract_date(rec)
+                if rec_date is None:
                     continue
-                if isinstance(raw_d, date) and not isinstance(raw_d, datetime):
-                    emp_dates.append(raw_d)
-                elif isinstance(raw_d, datetime):
-                    emp_dates.append(raw_d.date())
-                else:
-                    try:
-                        import pandas as pd
-                        emp_dates.append(pd.to_datetime(str(raw_d)).date())
-                    except Exception:
-                        pass
+                if primary_ym is None or (rec_date.year, rec_date.month) == primary_ym:
+                    emp_dates.append(rec_date)
+                    scoped_rows.append(rec)
+
+            # If no rows fall in primary month for this employee, fallback to all employee rows
+            if not scoped_rows:
+                scoped_rows = rows
+                emp_dates = [extract_date(r) for r in rows if extract_date(r) is not None]
 
             emp_total_days = (
                 (max(emp_dates) - min(emp_dates)).days + 1 if emp_dates else total_days_global
             )
 
             # Counters
-            present_days  = absent_days  = half_days    = lop_days = 0
+            present_days  = absent_days  = half_days = 0
             shift_a       = shift_general = shift_b     = shift_b1 = shift_c = 0
-            missing_out   = missing_in   = needs_review = 0
+            needs_review = 0
             total_wh_mins = total_ot_mins = 0
 
-            for rec in rows:
+            for rec in scoped_rows:
                 st  = str(cls._get_val(rec, "status") or "").lower().strip()
                 sft = str(cls._get_val(rec, "shift")  or "").strip().upper()
                 clean_sft = sft.replace("SHIFT", "").replace("(AUTO-DETECTED)", "").replace("AUTO-DETECTED", "").strip()
@@ -233,10 +262,7 @@ class AttendanceExporter:
                     present_days += 1
                     if "half day" in st:
                         half_days += 1
-                elif "lop" in st or "loss of pay" in st:
-                    lop_days   += 1
-                    absent_days += 1
-                elif "absent" in st:
+                else:
                     absent_days += 1
 
                 if is_present:
@@ -250,14 +276,6 @@ class AttendanceExporter:
                         shift_b += 1
                     elif clean_sft.startswith("C") or "NIGHT" in clean_sft or clean_sft == "3":
                         shift_c += 1
-
-                if "missing" in st:
-                    if "out" in st or "logout" in st or "checkout" in st:
-                        missing_out += 1
-                    elif "in" in st or "login" in st or "checkin" in st:
-                        missing_in += 1
-                    else:
-                        missing_out += 1
 
                 if "manual review" in st or "needs manual" in st or "single punch" in st:
                     needs_review += 1
@@ -298,14 +316,11 @@ class AttendanceExporter:
                 "Present Days":              present_days,
                 "Absent Days":               absent_days,
                 "Half Days":                 half_days,
-                "LOP Days":                  lop_days,
                 "Shift A Count":             shift_a,
                 "General Count":             shift_general,
                 "Shift B Count":             shift_b,
                 "Shift B1 Count":            shift_b1,
                 "Shift C Count":             shift_c,
-                "Missing Punch-Out Count":   missing_out,
-                "Missing Punch-In Count":    missing_in,
                 "Needs Manual Review Count": needs_review,
                 "Total Working Hours":       cls._mins_to_hhmm(total_wh_mins),
                 "Total Overtime Hours":      cls._mins_to_hhmm(total_ot_mins),
@@ -473,14 +488,11 @@ class AttendanceExporter:
             "Present Days",
             "Absent Days",
             "Half Days",
-            "LOP Days",
             "Shift A Count",
             "General Count",
             "Shift B Count",
             "Shift B1 Count",
             "Shift C Count",
-            "Missing Punch-Out Count",
-            "Missing Punch-In Count",
             "Needs Manual Review Count",
             "Total Working Hours",
             "Total Overtime Hours",

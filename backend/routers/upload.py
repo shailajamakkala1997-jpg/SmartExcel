@@ -43,8 +43,7 @@ from typing import Optional
 @router.post("/upload")
 def upload_attendance_excel(
     file: UploadFile = File(...),
-    total_punches_file: Optional[UploadFile] = File(None),
-    db: Session = Depends(get_db)
+    total_punches_file: Optional[UploadFile] = File(None)
 ):
     filename = file.filename or "uploaded_file.xlsx"
     filename_lower = filename.lower()
@@ -260,8 +259,7 @@ def upload_attendance_excel(
     absent_count = sum(1 for r in formatted_records if r.get("status") == "Absent")
     night_shift_count = sum(1 for r in formatted_records if r.get("shift") in ["C", "B1"] or r.get("is_overnight") is True)
     late_login_count = sum(1 for r in formatted_records if "Late" in str(r.get("status") or "") or "Late" in str(r.get("remarks") or ""))
-    missing_logout_count = sum(1 for r in formatted_records if r.get("status") in ["Missing Logout", "Missing Punch-Out"])
-    missing_login_count = sum(1 for r in formatted_records if r.get("status") in ["Missing Login", "Missing Punch-In"])
+    needs_manual_review_count = sum(1 for r in formatted_records if "manual review" in str(r.get("status") or "").lower() or "single punch" in str(r.get("status") or "").lower())
     overtime_count = sum(
         1 for r in formatted_records
         if (r.get("overtime_hours") and str(r.get("overtime_hours")).strip() not in ("00:00", "--", "0", "None", ""))
@@ -279,8 +277,7 @@ def upload_attendance_excel(
         "absent": absent_count,
         "night_shift": night_shift_count,
         "late_login": late_login_count,
-        "missing_logout": missing_logout_count,
-        "missing_login": missing_login_count,
+        "needs_manual_review": needs_manual_review_count,
         "overtime": overtime_count,
         "invalid_hours": invalid_hours_count
     }
@@ -294,7 +291,7 @@ def upload_attendance_excel(
     }
 
     return {
-        "message": "File processed in memory successfully",
+        "message": "File processed successfully",
         "filename": filename,
         "processed_count": total_records,
         "exception_count": sum(1 for r in formatted_records if r.get("status") != "Present"),

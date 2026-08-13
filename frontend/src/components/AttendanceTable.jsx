@@ -1,15 +1,20 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Search, ChevronLeft, ChevronRight, CheckCircle2, AlertTriangle, AlertCircle, TrendingUp, X, Download, RefreshCw, Moon } from 'lucide-react';
+import { Search, ChevronLeft, ChevronRight, CheckCircle2, AlertTriangle, AlertCircle, TrendingUp, X, Download, RefreshCw, Moon, Edit2, Trash2, Save } from 'lucide-react';
+import axios from 'axios';
 
 export default function AttendanceTable({
   records, columns, loading, searchTerm, setSearchTerm,
   selectedShift, setSelectedShift, selectedStatus, setSelectedStatus,
-  selectedDept, setSelectedDept, onExport, activeFilterLabel
+  selectedDept, setSelectedDept, onExport, activeFilterLabel,
+  onUpdateRecord, onDeleteRecord
 }) {
   const [currentPage, setCurrentPage] = useState(1);
   const [showSuggestions, setShowSuggestions] = useState(false);
+  const [editingRecord, setEditingRecord] = useState(null);
+  const [savingEdit, setSavingEdit] = useState(false);
   const searchContainerRef = useRef(null);
   const itemsPerPage = 15;
+
 
   useEffect(() => {
     setCurrentPage(1);
@@ -90,8 +95,110 @@ export default function AttendanceTable({
       }
     }
 
+    if (!list.includes('Actions')) {
+      list.push('Actions');
+    }
+
     return list;
   }, [rawHeaders]);
+
+  const handleStartEdit = (rec) => {
+    const recId = rec.id !== undefined ? rec.id : rec.raw_idx;
+    setEditingRecord({
+      recId,
+      id: rec.id,
+      employee_name: rec.employee_name || rec['Employee Name'] || '',
+      employee_id: rec.employee_id || rec['Emp ID'] || '',
+      attendance_date: rec.attendance_date || rec['Date'] || '',
+      first_check_in: rec.first_check_in || rec['FIRST CHECK IN'] || rec['Check In'] || '',
+      last_check_out: rec.last_check_out || rec['LAST CHECK OUT'] || rec['Check Out'] || '',
+      shift: rec.shift || rec['Shift'] || 'A',
+      status: rec.status || rec['Status'] || 'Present (Full Day)',
+      remarks: rec.remarks || rec['Remarks'] || ''
+    });
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editingRecord) return;
+    setSavingEdit(true);
+
+    const checkIn = editingRecord.first_check_in && editingRecord.first_check_in !== '--' ? editingRecord.first_check_in : null;
+    const checkOut = editingRecord.last_check_out && editingRecord.last_check_out !== '--' ? editingRecord.last_check_out : null;
+
+    let working_hours = '--';
+    let working_hours_decimal = 0.0;
+    let overtime_hours = '00:00';
+    let overtime_hours_decimal = 0.0;
+    let is_overnight = false;
+
+    if (checkIn && checkOut) {
+      try {
+        const [cinH, cinM] = checkIn.split(':').map(Number);
+        const [coutH, coutM] = checkOut.split(':').map(Number);
+        if (!isNaN(cinH) && !isNaN(coutH)) {
+          let totalMins = (coutH * 60 + coutM) - (cinH * 60 + cinM);
+          if (totalMins < 0) {
+            totalMins += 24 * 60;
+            is_overnight = true;
+          }
+          const h = Math.floor(totalMins / 60);
+          const m = totalMins % 60;
+          working_hours = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+          working_hours_decimal = Number((totalMins / 60).toFixed(2));
+          if (totalMins > 480) {
+            const otMins = totalMins - 480;
+            const otH = Math.floor(otMins / 60);
+            const otM = otMins % 60;
+            overtime_hours = `${String(otH).padStart(2, '0')}:${String(otM).padStart(2, '0')}`;
+            overtime_hours_decimal = Number((otMins / 60).toFixed(2));
+          }
+        }
+      } catch (err) {
+        console.warn('Working hours calculation error:', err);
+      }
+    }
+
+    const payload = {
+      first_check_in: checkIn || '--',
+      last_check_out: checkOut || '--',
+      'FIRST CHECK IN': checkIn || '--',
+      'LAST CHECK OUT': checkOut || '--',
+      shift: editingRecord.shift,
+      Shift: editingRecord.shift,
+      status: editingRecord.status,
+      Status: editingRecord.status,
+      remarks: editingRecord.remarks,
+      Remarks: editingRecord.remarks,
+      working_hours,
+      'Working Hours': working_hours,
+      working_hours_decimal,
+      overtime_hours,
+      'Overtime Hours': overtime_hours,
+      overtime_hours_decimal,
+      is_overnight
+    };
+
+    if (editingRecord.id !== undefined && editingRecord.id !== null) {
+      try {
+        await axios.put(`/api/attendance/${editingRecord.id}`, {
+          first_check_in: checkIn,
+          last_check_out: checkOut,
+          shift: editingRecord.shift,
+          status: editingRecord.status,
+          remarks: editingRecord.remarks
+        });
+      } catch (err) {
+        console.error('API update failed:', err);
+      }
+    }
+
+    if (onUpdateRecord) {
+      onUpdateRecord(editingRecord.recId, payload);
+    }
+
+    setSavingEdit(false);
+    setEditingRecord(null);
+  };
 
   const getStatusBadge = (status) => {
     const st = String(status || '').toLowerCase();
@@ -111,12 +218,40 @@ export default function AttendanceTable({
     if (s === 'GENERAL' || s === 'GEN' || s === '4') return <span className="badge badge-shift-gen">General</span>;
     if (s === 'B' || s === '2') return <span className="badge badge-shift-b">Shift B</span>;
     if (s === 'B1' || s === '5') return <span className="badge badge-shift-b1">Shift B1</span>;
+    if (s === 'B+C' || s === 'B + C' || s === 'BC') return <span className="badge badge-shift-b1" style={{ background: '#6D28D9', color: '#FFFFFF', border: '1px solid #5B21B6', fontWeight: 800 }}><Moon style={{ width: 8, height: 8 }} /> Shift B+C</span>;
+    if (s === 'A+B' || s === 'A + B' || s === 'AB') return <span className="badge badge-shift-a" style={{ background: '#D97706', color: '#FFFFFF', border: '1px solid #B45309', fontWeight: 800 }}>Shift A+B</span>;
     if (s === 'C' || s === '3' || s === 'NIGHT') return <span className="badge badge-shift-c"><Moon style={{ width: 8, height: 8 }} /> Shift C</span>;
     return <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>{shift && shift !== 'None' && shift !== 'Unknown' ? shift : '--'}</span>;
   };
 
+
   const renderCell = (rec, colName) => {
     const colLower = String(colName || '').toLowerCase().trim();
+    if (colLower === 'actions') {
+      const recordId = rec.id !== undefined ? rec.id : rec.raw_idx;
+      return (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <button
+            onClick={() => handleStartEdit(rec)}
+            style={{ padding: '4px 8px', background: '#F0F9F3', border: '1px solid #B3E6C4', borderRadius: 4, color: '#00873D', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, fontWeight: 700 }}
+            title="Edit Record"
+            id={`edit-rec-${recordId}`}
+          >
+            <Edit2 style={{ width: 12, height: 12 }} /> Edit
+          </button>
+          {onDeleteRecord && (
+            <button
+              onClick={() => onDeleteRecord(recordId)}
+              style={{ padding: '4px 6px', background: '#FEE2E2', border: '1px solid #FECACA', borderRadius: 4, color: '#991B1B', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4, fontSize: 11 }}
+              title="Delete Record"
+              id={`del-rec-${recordId}`}
+            >
+              <Trash2 style={{ width: 12, height: 12 }} />
+            </button>
+          )}
+        </div>
+      );
+    }
     if (colLower === 'status' || colLower === 'day status' || colLower === 'day_status') {
       const statusVal = rec.status || rec.Status || rec.STATUS || rec[colName];
       return getStatusBadge(statusVal);
@@ -346,6 +481,76 @@ export default function AttendanceTable({
           </button>
         </div>
       </div>
+
+      {/* Edit Record Modal */}
+      {editingRecord && (
+        <div
+          style={{
+            position: 'fixed', inset: 0, zIndex: 70,
+            background: 'rgba(10, 33, 19, 0.65)', backdropFilter: 'blur(4px)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20
+          }}
+          onClick={e => { if (e.target === e.currentTarget) setEditingRecord(null); }}
+        >
+          <div style={{ width: '100%', maxWidth: 500, background: '#FFFFFF', borderRadius: 12, border: '1px solid #009E49', boxShadow: '0 20px 40px rgba(0,158,73,0.2)', overflow: 'hidden' }}>
+            <div style={{ padding: '14px 18px', background: '#009E49', color: '#FFFFFF', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div style={{ fontSize: 14, fontWeight: 800 }}>Edit Live Attendance Record</div>
+              <button onClick={() => setEditingRecord(null)} style={{ background: 'none', border: 'none', color: '#FFFFFF', cursor: 'pointer' }} id="close-edit-modal">
+                <X style={{ width: 16, height: 16 }} />
+              </button>
+            </div>
+            <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 14 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: '#0A2113', padding: '8px 12px', background: '#F0F9F3', borderRadius: 6, border: '1px solid #B3E6C4' }}>
+                {editingRecord.employee_name} ({editingRecord.employee_id}) &bull; {editingRecord.attendance_date}
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                <div>
+                  <label style={{ fontSize: 11, fontWeight: 700, color: '#556C5D', display: 'block', marginBottom: 4 }}>Check In (HH:MM)</label>
+                  <input type="text" className="input-enterprise" value={editingRecord.first_check_in} onChange={e => setEditingRecord({ ...editingRecord, first_check_in: e.target.value })} id="edit-checkin" />
+                </div>
+                <div>
+                  <label style={{ fontSize: 11, fontWeight: 700, color: '#556C5D', display: 'block', marginBottom: 4 }}>Check Out (HH:MM)</label>
+                  <input type="text" className="input-enterprise" value={editingRecord.last_check_out} onChange={e => setEditingRecord({ ...editingRecord, last_check_out: e.target.value })} id="edit-checkout" />
+                </div>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                <div>
+                  <label style={{ fontSize: 11, fontWeight: 700, color: '#556C5D', display: 'block', marginBottom: 4 }}>Shift</label>
+                  <select className="input-enterprise" value={editingRecord.shift} onChange={e => setEditingRecord({ ...editingRecord, shift: e.target.value })} id="edit-shift">
+                    <option value="A">Shift A (06:00 - 14:00)</option>
+                    <option value="General">General (09:00 - 17:30)</option>
+                    <option value="B">Shift B (14:00 - 22:00)</option>
+                    <option value="B1">Shift B1 (17:30 - 06:00)</option>
+                    <option value="C">Shift C (22:00 - 06:00)</option>
+                  </select>
+                </div>
+                <div>
+                  <label style={{ fontSize: 11, fontWeight: 700, color: '#556C5D', display: 'block', marginBottom: 4 }}>Status</label>
+                  <select className="input-enterprise" value={editingRecord.status} onChange={e => setEditingRecord({ ...editingRecord, status: e.target.value })} id="edit-status">
+                    <option value="Present (Full Day)">Present (Full Day)</option>
+                    <option value="Present (Half Day)">Present (Half Day)</option>
+                    <option value="Late Login">Late Login</option>
+                    <option value="Short Hours">Short Hours</option>
+                    <option value="Needs Manual Review">Needs Manual Review</option>
+                    <option value="Absent">Absent</option>
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label style={{ fontSize: 11, fontWeight: 700, color: '#556C5D', display: 'block', marginBottom: 4 }}>Remarks</label>
+                <input type="text" className="input-enterprise" value={editingRecord.remarks} onChange={e => setEditingRecord({ ...editingRecord, remarks: e.target.value })} id="edit-remarks" />
+              </div>
+            </div>
+            <div style={{ padding: '12px 18px', background: '#F8FAF7', borderTop: '1px solid #E2EDE5', display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+              <button onClick={() => setEditingRecord(null)} className="btn-ghost" id="cancel-edit-btn">Cancel</button>
+              <button onClick={handleSaveEdit} disabled={savingEdit} className="btn-primary" id="save-edit-btn">
+                {savingEdit ? <RefreshCw className="spin" style={{ width: 14, height: 14 }} /> : <Save style={{ width: 14, height: 14 }} />}
+                Save Changes
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
-}
+}

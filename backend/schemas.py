@@ -40,8 +40,8 @@ class SummaryMetrics(BaseModel):
     absent: int
     night_shift: int
     late_login: int
-    missing_logout: int
-    missing_login: int
+    missing_logout: int = 0
+    missing_login: int = 0
     overtime: int
     invalid_hours: int
     needs_manual_review: int = 0

@@ -29,7 +29,7 @@ def get_dashboard_summary(db: Session = Depends(get_db)):
         or "Overtime" in (r.remarks or "")
     )
     invalid_hours_count = sum(1 for r in records if r.status == "Invalid Hours")
-    needs_manual_review_count = sum(1 for r in records if r.status == "Needs Manual Review")
+    needs_manual_review_count = sum(1 for r in records if "manual review" in str(r.status or "").lower() or "single punch" in str(r.status or "").lower())
 
     summary = SummaryMetrics(
         total_records=total_records,

@@ -39,27 +39,47 @@ def get_attendance_records(
     records = query.order_by(AttendanceRecord.attendance_date.desc(), AttendanceRecord.employee_name.asc()).all()
     return records
 
+from pydantic import BaseModel
+
+class AttendanceRecordUpdatePayload(BaseModel):
+    first_check_in: Optional[str] = None
+    last_check_out: Optional[str] = None
+    status: Optional[str] = None
+    remarks: Optional[str] = None
+    shift: Optional[str] = None
+    department: Optional[str] = None
+
 @router.put("/{record_id}", response_model=AttendanceRecordResponse)
 def update_attendance_record(
     record_id: int,
+    payload: Optional[AttendanceRecordUpdatePayload] = None,
     first_check_in: Optional[str] = None,
     last_check_out: Optional[str] = None,
     status: Optional[str] = None,
     remarks: Optional[str] = None,
+    shift: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
     record = db.query(AttendanceRecord).filter(AttendanceRecord.id == record_id).first()
     if not record:
         raise HTTPException(status_code=404, detail="Attendance record not found")
 
-    if first_check_in is not None:
-        record.first_check_in = first_check_in
-    if last_check_out is not None:
-        record.last_check_out = last_check_out
-    if status is not None:
-        record.status = status
-    if remarks is not None:
-        record.remarks = remarks
+    in_val = payload.first_check_in if (payload and payload.first_check_in is not None) else first_check_in
+    out_val = payload.last_check_out if (payload and payload.last_check_out is not None) else last_check_out
+    st_val = payload.status if (payload and payload.status is not None) else status
+    rem_val = payload.remarks if (payload and payload.remarks is not None) else remarks
+    sh_val = payload.shift if (payload and payload.shift is not None) else shift
+
+    if in_val is not None:
+        record.first_check_in = in_val
+    if out_val is not None:
+        record.last_check_out = out_val
+    if st_val is not None:
+        record.status = st_val
+    if rem_val is not None:
+        record.remarks = rem_val
+    if sh_val is not None:
+        record.shift = sh_val
 
     # Recalculate working hours & overtime if punches updated
     if record.first_check_in and record.last_check_out:
@@ -87,6 +107,7 @@ def update_attendance_record(
     db.commit()
 
     return record
+
 
 @router.delete("/clear-all")
 def clear_all_attendance(db: Session = Depends(get_db)):
