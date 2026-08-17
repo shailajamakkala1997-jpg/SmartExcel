@@ -1,7 +1,7 @@
 import React from 'react';
-import { FileSpreadsheet, Upload, Download } from 'lucide-react';
+import { FileSpreadsheet, Upload, Download, Loader2 } from 'lucide-react';
 
-export default function Navbar({ onOpenUpload, onExport, hasData, activeFilterLabel }) {
+export default function Navbar({ onOpenUpload, onExport, hasData, activeFilterLabel, exporting }) {
   return (
     <header className="enterprise-nav sticky top-0 z-40 w-full shadow-md">
       <div className="max-w-screen-2xl mx-auto px-6 h-14 flex items-center justify-between">
@@ -47,14 +47,24 @@ export default function Navbar({ onOpenUpload, onExport, hasData, activeFilterLa
 
           {hasData && (
             <button
-              onClick={() => onExport && onExport('full')}
+              onClick={() => !exporting && onExport && onExport('full')}
               className="btn-export"
-              style={{ background: '#007334', color: '#FFFFFF', border: '1px solid #005F2B' }}
+              disabled={exporting}
+              style={{
+                background: exporting ? '#005F2B' : '#007334',
+                color: '#FFFFFF',
+                border: '1px solid #005F2B',
+                opacity: exporting ? 0.75 : 1,
+                cursor: exporting ? 'not-allowed' : 'pointer',
+                display: 'flex', alignItems: 'center', gap: 5
+              }}
               id="nav-export-btn"
-              title="Download ALL processed records (ignores current filter)"
+              title={exporting ? 'Generating Excel file, please wait...' : 'Download ALL processed records — 3 sheets (Daily Detail + Monthly Summary + Manual Review)'}
             >
-              <Download style={{ width: 13, height: 13 }} />
-              Export Full XLSX
+              {exporting
+                ? <Loader2 style={{ width: 13, height: 13, animation: 'spin 1s linear infinite' }} />
+                : <Download style={{ width: 13, height: 13 }} />}
+              {exporting ? 'Downloading...' : 'Export Full XLSX'}
             </button>
           )}
         </div>
@@ -62,4 +72,5 @@ export default function Navbar({ onOpenUpload, onExport, hasData, activeFilterLa
       </div>
     </header>
   );
-}
+}
+

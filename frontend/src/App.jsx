@@ -192,55 +192,72 @@ export default function App() {
     setExportToast(null);
 
     try {
-      const response = await axios.post('/api/export/excel-direct', {
+      // Full export → 3-sheet workbook (Daily Detail + Monthly Summary + Manual Review)
+      // Filtered export → single-sheet with current view
+      const endpoint = scope === 'full'
+        ? '/api/export/excel-multisheet'
+        : '/api/export/excel-direct';
+
+      const response = await axios.post(endpoint, {
         records: targetRecords,
         columns: excelColumns
       }, {
-        responseType: 'blob'
+        responseType: 'blob',
+        timeout: 300000
       });
 
+      // Verify the response is actually an Excel file (not an error JSON)
+      const contentType = response.headers['content-type'] || '';
+      if (response.data.size === 0 || (!contentType.includes('spreadsheet') && !contentType.includes('octet-stream') && !contentType.includes('zip'))) {
+        throw new Error(`Unexpected response type: ${contentType}`);
+      }
+
       const cleanBaseName = uploadedFileName ? uploadedFileName.replace(/\.[^/.]+$/, '') : 'Attendance_Report';
-      // Build a descriptive file name that includes the active filter
       let filterTag;
       if (scope === 'full') {
-        filterTag = 'Full';
+        filterTag = 'Full_3Sheet';
       } else if (activeFilterLabel) {
-        filterTag = activeFilterLabel.replace(/[^a-zA-Z0-9]/g, '_'); // safe for filenames
+        filterTag = activeFilterLabel.replace(/[^a-zA-Z0-9]/g, '_');
       } else {
         filterTag = 'Filtered';
       }
       const fileName = `${filterTag}_${cleanBaseName}.xlsx`;
-      
+
+      // Reliable cross-browser blob download
       const blob = new Blob([response.data], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
-      link.style.display = 'none';
       link.href = url;
       link.setAttribute('download', fileName);
+      link.style.position = 'fixed';
+      link.style.top = '-100px';
+      link.style.left = '-100px';
+      link.style.opacity = '0';
       document.body.appendChild(link);
-      link.click();
+      // Use dispatchEvent for better async context compatibility
+      link.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
 
       setTimeout(() => {
-        if (document.body.contains(link)) {
-          document.body.removeChild(link);
-        }
+        if (document.body.contains(link)) document.body.removeChild(link);
         window.URL.revokeObjectURL(url);
-      }, 3000);
+      }, 5000);
 
       setExporting(false);
-      const filterDesc = scope === 'full' ? 'all records' : (activeFilterLabel ? `"${activeFilterLabel}" filter` : 'filtered view');
+      const filterDesc = scope === 'full'
+        ? '3 sheets: Daily Detail, Monthly Summary, Manual Review'
+        : (activeFilterLabel ? `"${activeFilterLabel}" filter` : 'filtered view');
       setExportToast({
-        title: 'Excel Download Initiated!',
-        message: `Generated '${fileName}' with ${targetRecords.length} records (${filterDesc}). Check your Downloads folder!`
+        title: `✅ Download Ready — ${fileName}`,
+        message: `${targetRecords.length} records exported (${filterDesc}). Check your Downloads folder or browser download bar!`
       });
 
       setTimeout(() => {
         setExportToast(null);
-      }, 5000);
+      }, 8000);
     } catch (err) {
       console.error('Export error:', err);
       setExporting(false);
-      alert('Failed to export Excel file. Please try again.');
+      alert(`Export failed: ${err.message || 'Unknown error'}. Please try again or check console.`);
     }
   };
 

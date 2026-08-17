@@ -12,33 +12,42 @@ from reportlab.lib import colors
 class AttendanceExporter:
 
     # ── shared style constants ────────────────────────────────────────────────
-    _HDR_FILL   = PatternFill(start_color="1E293B", end_color="1E293B", fill_type="solid")
+    _HDR_FILL   = PatternFill(start_color="1E3A5F", end_color="1E3A5F", fill_type="solid")  # Dark navy
     _HDR_FONT   = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
-    _SUM_FILL   = PatternFill(start_color="064E3B", end_color="064E3B", fill_type="solid")
+    _SUM_FILL   = PatternFill(start_color="14532D", end_color="14532D", fill_type="solid")  # Dark emerald
     _SUM_FONT   = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
-    _CENTER     = Alignment(horizontal="center", vertical="center")
-    _LEFT       = Alignment(horizontal="left",   vertical="center")
+    _NRM_FONT   = Font(name="Calibri", size=10, color="1E293B")   # Normal data font
+    _BOLD_FONT  = Font(name="Calibri", size=10, bold=True, color="1E293B")
+    _CENTER     = Alignment(horizontal="center", vertical="center", wrap_text=False)
+    _LEFT       = Alignment(horizontal="left",   vertical="center", wrap_text=False, indent=1)
+    _LEFT_WRAP  = Alignment(horizontal="left",   vertical="top",    wrap_text=True,  indent=1)
     _THIN_BORD  = Border(
-        left=Side(style="thin", color="E2E8F0"),
-        right=Side(style="thin", color="E2E8F0"),
-        top=Side(style="thin", color="E2E8F0"),
-        bottom=Side(style="thin", color="E2E8F0"),
+        left=Side(style="thin", color="C0C8D4"),
+        right=Side(style="thin", color="C0C8D4"),
+        top=Side(style="thin", color="C0C8D4"),
+        bottom=Side(style="thin", color="C0C8D4"),
+    )
+    _MED_BORD   = Border(
+        left=Side(style="medium", color="94A3B8"),
+        right=Side(style="medium", color="94A3B8"),
+        top=Side(style="medium", color="94A3B8"),
+        bottom=Side(style="medium", color="94A3B8"),
     )
 
     # ── row-level fills (Daily Detail) ────────────────────────────────────────
-    _FILL_GREEN  = PatternFill(start_color="D1FAE5", end_color="D1FAE5", fill_type="solid")
-    _FONT_GREEN  = Font(color="065F46", bold=True)
-    _FILL_PURPLE = PatternFill(start_color="F3E8FF", end_color="F3E8FF", fill_type="solid")
-    _FONT_PURPLE = Font(color="6B21A8", bold=True)
-    _FILL_YELLOW = PatternFill(start_color="FEF3C7", end_color="FEF3C7", fill_type="solid")
-    _FONT_YELLOW = Font(color="92400E", bold=True)
-    _FILL_ORANGE = PatternFill(start_color="FFEDD5", end_color="FFEDD5", fill_type="solid")
-    _FONT_ORANGE = Font(color="C2410C", bold=True)
-    _FILL_RED    = PatternFill(start_color="FEE2E2", end_color="FEE2E2", fill_type="solid")
-    _FONT_RED    = Font(color="991B1B", bold=True)
+    _FILL_GREEN  = PatternFill(start_color="DCFCE7", end_color="DCFCE7", fill_type="solid")  # green-100
+    _FONT_GREEN  = Font(name="Calibri", size=10, color="14532D", bold=True)  # green-900
+    _FILL_PURPLE = PatternFill(start_color="EDE9FE", end_color="EDE9FE", fill_type="solid")  # violet-100
+    _FONT_PURPLE = Font(name="Calibri", size=10, color="4C1D95", bold=True)  # violet-900
+    _FILL_YELLOW = PatternFill(start_color="FEF9C3", end_color="FEF9C3", fill_type="solid")  # yellow-100
+    _FONT_YELLOW = Font(name="Calibri", size=10, color="713F12", bold=True)  # yellow-900
+    _FILL_ORANGE = PatternFill(start_color="FFEDD5", end_color="FFEDD5", fill_type="solid")  # orange-100
+    _FONT_ORANGE = Font(name="Calibri", size=10, color="7C2D12", bold=True)  # orange-900
+    _FILL_RED    = PatternFill(start_color="FFE4E6", end_color="FFE4E6", fill_type="solid")  # rose-100
+    _FONT_RED    = Font(name="Calibri", size=10, color="881337", bold=True)  # rose-900
 
     # ── zebra fills (Monthly Summary) ────────────────────────────────────────
-    _ZEBRA_ODD  = PatternFill(start_color="F0FDF4", end_color="F0FDF4", fill_type="solid")
+    _ZEBRA_ODD  = PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")  # slate-50
     _ZEBRA_EVEN = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
 
     # =========================================================================
@@ -594,3 +603,208 @@ class AttendanceExporter:
         doc.build(story)
         buffer.seek(0)
         return buffer
+
+    # =========================================================================
+    # 3-SHEET MULTISHEET EXPORT
+    # =========================================================================
+
+    @classmethod
+    def export_to_excel_multisheet(cls, records, columns=None):
+        """
+        Creates a 3-sheet Excel workbook:
+          Sheet 1 — Daily Detail   : full attendance records
+          Sheet 2 — Monthly Summary: per-employee aggregated statistics
+          Sheet 3 — Manual Review  : only Needs Manual Review rows
+        """
+        wb = openpyxl.Workbook()
+
+        # ── Sheet 1: Daily Detail ─────────────────────────────────────────────
+        ws1 = wb.active
+        ws1.title = "Daily Detail"
+        cls._write_daily_detail_sheet(ws1, records, columns)
+
+        # ── Sheet 2: Monthly Summary ──────────────────────────────────────────
+        ws2 = wb.create_sheet("Monthly Summary")
+        cls._write_monthly_summary_sheet(ws2, records)
+
+        # ── Sheet 3: Manual Review ────────────────────────────────────────────
+        ws3 = wb.create_sheet("Manual Review")
+        nmr_records = [r for r in records if "manual review" in str(cls._get_val(r, "status", "")).lower()]
+        cls._write_daily_detail_sheet(ws3, nmr_records, columns)
+
+        buffer = BytesIO()
+        wb.save(buffer)
+        buffer.seek(0)
+        return buffer
+
+    @classmethod
+    def _write_daily_detail_sheet(cls, ws, records, columns=None):
+        """Write Daily Detail rows to a worksheet with professional styling."""
+        # (header_label, record_key, col_width, alignment)
+        DETAIL_COLS = [
+            ("NO.",            "_rownum",         5,   "center"),
+            ("Emp ID",         "employee_id",     12,  "center"),
+            ("Employee Name",  "employee_name",   26,  "left"),
+            ("Department",     "department",      18,  "left"),
+            ("Gender",         "gender",          9,   "center"),
+            ("Day",            "weekday",         11,  "center"),
+            ("Date",           "attendance_date", 14,  "center"),
+            ("Shift",          "shift",           10,  "center"),
+            ("Login",          "first_check_in",  11,  "center"),
+            ("Logout Date",    "logout_date",     14,  "center"),
+            ("Logout",         "last_check_out",  11,  "center"),
+            ("Working Hours",  "working_hours",   14,  "center"),
+            ("Overtime Hours", "overtime_hours",  14,  "center"),
+            ("Status",         "status",          26,  "left"),
+            ("Remarks",        "remarks",         52,  "left_wrap"),
+        ]
+
+        # ── Header row ───────────────────────────────────────────────────────
+        for col_i, (hdr, _, width, _align) in enumerate(DETAIL_COLS, 1):
+            cell = ws.cell(row=1, column=col_i, value=hdr)
+            cell.fill      = cls._HDR_FILL
+            cell.font      = cls._HDR_FONT
+            cell.alignment = cls._CENTER
+            cell.border    = cls._THIN_BORD
+            ws.column_dimensions[get_column_letter(col_i)].width = width
+
+        ws.row_dimensions[1].height = 26
+        ws.freeze_panes = "A2"
+
+        # ── Status → fill/font mapping ────────────────────────────────────────
+        def _row_style(status):
+            st = str(status or "").lower()
+            if "manual review" in st: return cls._FILL_YELLOW, cls._FONT_YELLOW
+            if "half day"      in st: return cls._FILL_ORANGE, cls._FONT_ORANGE
+            if "absent"        in st: return cls._FILL_RED,    cls._FONT_RED
+            if "overnight"     in st or "c shift" in st: return cls._FILL_PURPLE, cls._FONT_PURPLE
+            if "present"       in st: return cls._FILL_GREEN,  cls._FONT_GREEN
+            return None, None
+
+        # ── Alternating plain row fill ────────────────────────────────────────
+        _ALT_ODD  = PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")
+        _ALT_EVEN = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+
+        for row_i, rec in enumerate(records, 2):
+            status     = cls._get_val(rec, "status", "")
+            fill, font = _row_style(status)
+            plain_fill = _ALT_ODD if row_i % 2 == 0 else _ALT_EVEN
+
+            for col_i, (_, key, _, align_tag) in enumerate(DETAIL_COLS, 1):
+                if key == "_rownum":
+                    val = str(row_i - 1)
+                else:
+                    raw = cls._get_val(rec, key, "")
+                    val = str(raw) if raw not in (None, "") else "--"
+
+                cell = ws.cell(row=row_i, column=col_i, value=val)
+                cell.border = cls._THIN_BORD
+
+                # Alignment
+                if align_tag == "left_wrap":
+                    cell.alignment = cls._LEFT_WRAP
+                elif align_tag == "left":
+                    cell.alignment = cls._LEFT
+                else:
+                    cell.alignment = cls._CENTER
+
+                # Fill & font
+                if fill:
+                    cell.fill = fill
+                    if font:
+                        # Keep font for status rows but normal size
+                        cell.font = font
+                else:
+                    cell.fill = plain_fill
+                    cell.font = cls._NRM_FONT
+
+            # Row height — taller for wrapped remarks
+            remarks_val = cls._get_val(rec, "remarks", "")
+            has_long_remarks = len(str(remarks_val)) > 50
+            ws.row_dimensions[row_i].height = 32 if has_long_remarks else 20
+
+    @classmethod
+    def _write_monthly_summary_sheet(cls, ws, records):
+        """Write per-employee Monthly Summary to a worksheet."""
+        from collections import defaultdict
+
+        # Aggregate per employee
+        emp_data = defaultdict(lambda: {
+            "name": "", "dept": "", "gender": "",
+            "full_day": 0, "half_day": 0, "absent": 0,
+            "nmr": 0, "total_hours": 0.0, "overtime_hours": 0.0,
+            "total_days": 0
+        })
+
+        for rec in records:
+            eid    = str(cls._get_val(rec, "employee_id", ""))
+            if not eid or eid in ("--", "None"): continue
+            d      = emp_data[eid]
+            d["name"]   = cls._get_val(rec, "employee_name", "")
+            d["dept"]   = cls._get_val(rec, "department", "")
+            d["gender"] = cls._get_val(rec, "gender", "")
+            status = str(cls._get_val(rec, "status", "")).lower()
+            d["total_days"] += 1
+            if "manual review" in status:   d["nmr"]       += 1
+            elif "half day"    in status:   d["half_day"]  += 1
+            elif "absent"      in status:   d["absent"]    += 1
+            elif "present"     in status:   d["full_day"]  += 1
+            try:
+                d["total_hours"]    += float(cls._get_val(rec, "working_hours_decimal", 0) or 0)
+                d["overtime_hours"] += float(cls._get_val(rec, "overtime_hours_decimal", 0) or 0)
+            except (TypeError, ValueError):
+                pass
+
+        # (header, width, alignment)
+        SUMMARY_COLS = [
+            ("Emp ID",        11, "center"), ("Employee Name",  28, "left"),
+            ("Department",    20, "left"),   ("Gender",         10, "center"),
+            ("Total Days",    12, "center"), ("Full Day",       12, "center"),
+            ("Half Day",      12, "center"), ("Absent",         10, "center"),
+            ("NMR",           10, "center"), ("Total Hrs",      13, "center"),
+            ("Overtime Hrs",  14, "center"),
+        ]
+
+        # Header
+        for col_i, (hdr, width, _) in enumerate(SUMMARY_COLS, 1):
+            cell = ws.cell(row=1, column=col_i, value=hdr)
+            cell.fill      = cls._SUM_FILL
+            cell.font      = cls._SUM_FONT
+            cell.alignment = cls._CENTER
+            cell.border    = cls._THIN_BORD
+            ws.column_dimensions[get_column_letter(col_i)].width = width
+
+        ws.row_dimensions[1].height = 26
+        ws.freeze_panes = "A2"
+
+        NMR_FILL = PatternFill(start_color="FEF9C3", end_color="FEF9C3", fill_type="solid")
+        NMR_FONT = Font(name="Calibri", size=10, color="713F12", bold=True)
+        ABT_FILL = PatternFill(start_color="FFE4E6", end_color="FFE4E6", fill_type="solid")
+        ABT_FONT = Font(name="Calibri", size=10, color="881337", bold=True)
+
+        for row_i, (eid, d) in enumerate(sorted(emp_data.items()), 2):
+            total_h = d["total_hours"]
+            ot_h    = d["overtime_hours"]
+            row_vals = [
+                eid, d["name"], d["dept"], d["gender"],
+                d["total_days"], d["full_day"], d["half_day"],
+                d["absent"], d["nmr"],
+                f"{int(total_h)}:{int((total_h % 1)*60):02d}",
+                f"{int(ot_h)}:{int((ot_h % 1)*60):02d}",
+            ]
+            zebra = cls._ZEBRA_ODD if row_i % 2 == 0 else cls._ZEBRA_EVEN
+            for col_i, (val, (_, _, align_tag)) in enumerate(zip(row_vals, SUMMARY_COLS), 1):
+                cell = ws.cell(row=row_i, column=col_i, value=val)
+                cell.border    = cls._THIN_BORD
+                cell.alignment = cls._LEFT if align_tag == "left" else cls._CENTER
+                cell.fill = zebra
+                cell.font = cls._NRM_FONT
+                # Highlight NMR count
+                if col_i == 9 and d["nmr"] > 0:
+                    cell.fill = NMR_FILL
+                    cell.font = NMR_FONT
+                # Highlight Absent count
+                if col_i == 8 and d["absent"] > 0:
+                    cell.fill = ABT_FILL
+                    cell.font = ABT_FONT
+            ws.row_dimensions[row_i].height = 20
