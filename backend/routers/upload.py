@@ -142,38 +142,23 @@ def upload_attendance_excel(
                 else:
                     raise HTTPException(status_code=400, detail=f"Failed to open Excel file '{filename}': {str(excel_err)}")
 
-            # Auto-detect sheets within single workbook
+            # Auto-detect sheets within single workbook (1st Sheet = Raw Data, 2nd Sheet = Total Punches)
             if excel_file and excel_file.sheet_names:
                 sheet_names = excel_file.sheet_names
-                sheet_map_lower = {s.lower().strip(): s for s in sheet_names}
 
-                tp_sheet_name = None
-                raw_sheet_name = None
+                # 1st sheet (Index 0) is strictly treated as Raw Data Sheet
+                try:
+                    df_raw = pd.read_excel(excel_file, sheet_name=0)
+                except Exception as e:
+                    logger.warning(f"Error reading 1st sheet '{sheet_names[0]}' as Raw Data: {e}")
 
-                for s_clean, s_orig in sheet_map_lower.items():
-                    if "total" in s_clean and "punch" in s_clean:
-                        tp_sheet_name = s_orig
-                    elif "raw" in s_clean or "first" in s_clean or "summary" in s_clean:
-                        raw_sheet_name = s_orig
-
-                if df_punches is None and tp_sheet_name:
+                # If no separate 2nd file was provided, and workbook has a 2nd sheet (Index 1),
+                # strictly treat 2nd sheet as Total Punches Sheet
+                if df_punches is None and len(sheet_names) > 1:
                     try:
-                        df_punches = pd.read_excel(excel_file, sheet_name=tp_sheet_name)
+                        df_punches = pd.read_excel(excel_file, sheet_name=1)
                     except Exception as e:
-                        logger.warning(f"Error reading Total Punches sheet '{tp_sheet_name}': {e}")
-
-                if raw_sheet_name:
-                    try:
-                        df_raw = pd.read_excel(excel_file, sheet_name=raw_sheet_name)
-                    except Exception as e:
-                        logger.warning(f"Error reading Raw Data sheet '{raw_sheet_name}': {e}")
-
-                if df_raw is None and sheet_names:
-                    try:
-                        first_s = [s for s in sheet_names if s != tp_sheet_name][0] if tp_sheet_name and len(sheet_names) > 1 else sheet_names[0]
-                        df_raw = pd.read_excel(excel_file, sheet_name=first_s)
-                    except Exception:
-                        pass
+                        logger.warning(f"Error reading 2nd sheet '{sheet_names[1]}' as Total Punches: {e}")
 
                 records, cols = processor.process_dataframes(df_raw=df_raw, df_punches=df_punches)
                 if records:

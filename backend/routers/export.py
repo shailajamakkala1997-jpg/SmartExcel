@@ -37,6 +37,18 @@ def export_excel_direct(payload: Dict[str, Any] = Body(...)):
         headers={"Content-Disposition": "attachment; filename=Processed_Attendance_Report.xlsx"}
     )
 
+@router.post("/excel-multisheet")
+def export_excel_multisheet(payload: Dict[str, Any] = Body(...)):
+    """3-sheet Excel export: Daily Detail + Monthly Summary + Manual Review."""
+    records = payload.get("records", [])
+    columns = payload.get("columns", None)
+    excel_buffer = AttendanceExporter.export_to_excel_multisheet(records, columns=columns)
+    return Response(
+        content=excel_buffer.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=Attendance_Report_Full.xlsx"}
+    )
+
 @router.get("/excel")
 def export_excel(
     employee: Optional[str] = None,

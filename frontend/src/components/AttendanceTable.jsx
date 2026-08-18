@@ -50,7 +50,7 @@ export default function AttendanceTable({
     return Array.from(map.values()).slice(0, 6);
   }, [records, searchTerm]);
 
-  const defaultHeaders = ['Emp ID', 'Employee Name', 'Date', 'Shift', 'Check In', 'Check Out', 'SINGLE PUNCH', 'Working Hours', 'Overtime Hours', 'Status'];
+  const defaultHeaders = ['Emp ID', 'Employee Name', 'Date', 'Shift', 'Check In', 'Check Out', 'Working Hours', 'Overtime Hours', 'Status'];
   const rawHeaders = (columns && columns.length > 0) ? columns : defaultHeaders;
   const displayHeaders = useMemo(() => {
     const list = [...rawHeaders];
@@ -71,29 +71,15 @@ export default function AttendanceTable({
       }
     }
 
-    const hasSP = list.some(h => {
+    // Single Punch column removed — lone punches now appear in Check In or Check Out column
+    // based on _classify_single_punch() classification in the backend.
+    // Remove any SINGLE PUNCH column that may come from old Excel uploads
+    const spIdx = list.findIndex(h => {
       const hl = String(h).toLowerCase().replace(/_/g, '').replace(/\s+/g, '');
       return ['singlepunch', 'singlepunchtime', 'unpairedpunch'].includes(hl);
     });
-    if (!hasSP) {
-      const coIdx = list.findIndex(h => {
-        const hl = String(h).toLowerCase().replace(/_/g, '').replace(/\s+/g, '');
-        return ['lastcheckout', 'checkout', 'outtime'].includes(hl);
-      });
-      if (coIdx !== -1) {
-        list.splice(coIdx + 1, 0, 'SINGLE PUNCH');
-      } else {
-        const ciIdx = list.findIndex(h => {
-          const hl = String(h).toLowerCase().replace(/_/g, '').replace(/\s+/g, '');
-          return ['firstcheckin', 'checkin', 'intime'].includes(hl);
-        });
-        if (ciIdx !== -1) {
-          list.splice(ciIdx + 1, 0, 'SINGLE PUNCH');
-        } else {
-          list.push('SINGLE PUNCH');
-        }
-      }
-    }
+    if (spIdx !== -1) list.splice(spIdx, 1);
+
 
     if (!list.includes('Actions')) {
       list.push('Actions');
@@ -203,6 +189,8 @@ export default function AttendanceTable({
   const getStatusBadge = (status) => {
     const st = String(status || '').toLowerCase();
     if (st.includes('needs manual review') || st.includes('manual review')) return <span className="badge badge-manual-review"><AlertTriangle style={{ width: 8, height: 8 }} /> Needs Manual Review</span>;
+    if (st.includes('half day')) return <span className="badge" style={{ background: '#D97706', color: '#fff', border: '1px solid #B45309', fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 3 }}><CheckCircle2 style={{ width: 8, height: 8 }} /> Half Day</span>;
+    if (st.includes('full day')) return <span className="badge badge-present"><CheckCircle2 style={{ width: 8, height: 8 }} /> Present</span>;
     if (st.includes('present')) return <span className="badge badge-present"><CheckCircle2 style={{ width: 8, height: 8 }} /> Present</span>;
     if (st.includes('overtime')) return <span className="badge badge-overtime"><TrendingUp style={{ width: 8, height: 8 }} /> Overtime</span>;
     if (st.includes('late')) return <span className="badge badge-late"><AlertTriangle style={{ width: 8, height: 8 }} /> Late Login</span>;
@@ -291,23 +279,32 @@ export default function AttendanceTable({
     }
     if (['check out', 'checkout', 'last check out', 'out time', 'c shift exit'].includes(colLower)) {
       const outVal = rec.c_shift_exit || rec.last_check_out || rec[colName] || '--';
-      return <span className="mono-cell">{outVal && outVal !== 'None' ? outVal : '--'}</span>;
-    }
-    if (['single punch', 'single_punch', 'singlepunch', 'single punch time', 'unpaired punch'].includes(colLower)) {
-      const spVal = rec['SINGLE PUNCH'] || rec.single_punch || rec['Single Punch'] || rec[colName] || '--';
-      const isPresent = spVal && spVal !== '--' && spVal !== 'None' && spVal !== 'null';
+      const isNMR = rec.status === 'Needs Manual Review';
+      const hasVal = outVal && outVal !== '--' && outVal !== 'None' && outVal !== 'null';
       return (
-        <span className="mono-cell" style={{ color: isPresent ? '#7C3AED' : 'var(--text-muted)', fontWeight: isPresent ? 700 : 400 }}>
-          {isPresent ? spVal : '--'}
+        <span className="mono-cell" style={isNMR && hasVal ? { color: '#D97706', fontWeight: 700 } : {}}>
+          {hasVal ? outVal : '--'}
         </span>
       );
+    }
+    // Single Punch column removed — kept for backward compat only, renders nothing
+    if (['single punch', 'single_punch', 'singlepunch', 'single punch time', 'unpaired punch'].includes(colLower)) {
+      return <span style={{ color: 'var(--text-muted)' }}>--</span>;
     }
     if (['logout date', 'logout_date', 'check-out date', 'checkout date'].includes(colLower)) {
       const dv = rec.logout_date_str || rec.logout_date || rec['Logout Date'] || rec[colName] || '--';
       return <span className="mono-cell">{dv && dv !== 'None' ? dv : '--'}</span>;
     }
-    if (['check in', 'checkin', 'first check in', 'in time'].includes(colLower))
-      return <span className="mono-cell">{rec.first_check_in || rec[colName] || '--'}</span>;
+    if (['check in', 'checkin', 'first check in', 'in time'].includes(colLower)) {
+      const inVal = rec.first_check_in || rec[colName] || '--';
+      const isNMR = rec.status === 'Needs Manual Review';
+      const hasVal = inVal && inVal !== '--' && inVal !== 'None' && inVal !== 'null';
+      return (
+        <span className="mono-cell" style={isNMR && hasVal ? { color: '#D97706', fontWeight: 700 } : {}}>
+          {hasVal ? inVal : '--'}
+        </span>
+      );
+    }
     if (['date', 'attendance_date'].includes(colLower))
       return <span className="mono-cell">{rec.attendance_date || rec[colName] || '--'}</span>;
     if (['no.', 'no', 'sl no', 'sl.no', 's.no', 'sr no'].includes(colLower)) {

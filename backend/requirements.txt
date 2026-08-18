@@ -6,5 +6,7 @@ sqlalchemy
 pydantic
 reportlab
 python-multipart
+python-dotenv
 pytest
+
 

@@ -39,10 +39,11 @@ import re
 import calendar
 
 # ── Configurable business-rule constants ──────────────────────────────────────
-FULL_DAY_HOURS         = 8.0   # >= this -> Present (Full Day) [daytime shifts]
-NIGHT_FULL_DAY_HOURS   = 7.0   # >= this -> Present (Full Day) for C/B1 overnight shifts (standard ~8h night shift may produce 7.5h)
-HALF_DAY_HOURS         = 4.0   # >= this (and < FULL_DAY_HOURS) -> Present (Half Day)
-ORPHAN_SEARCH_WINDOW = 3  # How many subsequent rows to scan for orphan checkout
+FULL_DAY_HOURS         = 6.0   # >= 6.0 hours -> Present (Full Day) [all shifts]
+NIGHT_FULL_DAY_HOURS   = 6.0   # >= 6.0 hours -> Present (Full Day) for C/B1 overnight shifts
+HALF_DAY_HOURS         = 3.75  # >= 3.75 and < 6.0 hours -> Present (Half Day) [3h 45m]
+MIN_GENUINE_HOURS      = 3.75  # < 3.75 hours -> Absent with "Less time - Need Manual Review"
+ORPHAN_SEARCH_WINDOW   = 3     # How many subsequent rows to scan for orphan checkout
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -291,7 +292,7 @@ class AttendanceProcessor:
         columns = list(working.columns)
         used = set()
 
-        def match(primary_kws, fallback_kws=None):
+        def match(primary_kws, fallback_kws=None, role=None):
             all_kw_lists = [primary_kws]
             if fallback_kws:
                 all_kw_lists.append(fallback_kws)
@@ -302,6 +303,9 @@ class AttendanceProcessor:
                             continue
                         cl = self._col_lower(col)
                         words = set(re.findall(r'\w+', cl))
+                        # Prevent date columns like "Logout Date" or "Login Date" from matching time roles
+                        if role in ("login", "logout") and ("date" in words or "day" in words):
+                            continue
                         if " " in kw:
                             if kw in cl:
                                 used.add(col)
@@ -313,19 +317,19 @@ class AttendanceProcessor:
             return None
 
         col_map = {}
-        col_map["id"]         = match(self._ID_KW, self._ID_FALL_KW)
-        col_map["name"]       = match(self._NAME_KW)
-        col_map["first_name"] = match(self._FNAME_KW)
-        col_map["last_name"]  = match(self._LNAME_KW)
+        col_map["id"]         = match(self._ID_KW, self._ID_FALL_KW, role="id")
+        col_map["name"]       = match(self._NAME_KW, role="name")
+        col_map["first_name"] = match(self._FNAME_KW, role="first_name")
+        col_map["last_name"]  = match(self._LNAME_KW, role="last_name")
         if not col_map.get("name"):
-            col_map["name"] = col_map.get("first_name") or match(self._NAME_FALL)
-        col_map["date"]    = match(self._DATE_KW)
-        col_map["login"]   = match(self._LOGIN_KW, self._LOGIN_FALL)
-        col_map["logout"]  = match(self._LOGOUT_KW, self._LOGOUT_FALL)
-        col_map["gender"]  = match(self._GENDER_KW)
-        col_map["dept"]    = match(self._DEPT_KW)
-        col_map["weekday"] = match(self._WDAY_KW)
-        col_map["shift"]   = match(self._SHIFT_KW)
+            col_map["name"] = col_map.get("first_name") or match(self._NAME_FALL, role="name")
+        col_map["date"]    = match(self._DATE_KW, role="date")
+        col_map["login"]   = match(self._LOGIN_KW, self._LOGIN_FALL, role="login")
+        col_map["logout"]  = match(self._LOGOUT_KW, self._LOGOUT_FALL, role="logout")
+        col_map["gender"]  = match(self._GENDER_KW, role="gender")
+        col_map["dept"]    = match(self._DEPT_KW, role="dept")
+        col_map["weekday"] = match(self._WDAY_KW, role="weekday")
+        col_map["shift"]   = match(self._SHIFT_KW, role="shift")
 
         # Positional fallback: detect unmapped time-like / date-like columns
         if len(working) > 0:
@@ -399,11 +403,11 @@ class AttendanceProcessor:
 
         # Midnight-crossing session signal
         if is_overnight:
-            if 810 <= total < 1050:   # 13:30 – 17:29 crossing midnight → Shift B+C (Double Shift B+C)
+            if 810 <= total < 1050:   # 13:30 – 17:29 crossing midnight -> Shift B+C (Double Shift B+C)
                 return ("B+C", False, "B+C")
-            elif 1050 <= total < 1260:  # 17:30 – 20:59 crossing midnight → B1
+            elif 1050 <= total < 1260:  # 17:30 – 20:59 crossing midnight -> B1
                 return ("B1", False, "B1")
-            else:                     # < 13:30 or >= 21:00 crossing midnight → C
+            else:                     # < 13:30 or >= 21:00 crossing midnight -> C
                 return ("C", False, "C")
 
 
@@ -416,7 +420,7 @@ class AttendanceProcessor:
             return ("A", False, "A")
         elif 510 <= total < 810:        # 08:30 – 13:29 (General shift entry: 09:00 - 17:30)
             return ("General", False, "General")
-        elif 810 <= total < 1260:       # 13:30 – 20:59 same-day → Shift B (14:00 - 22:00 shift entry zone)
+        elif 810 <= total < 1260:       # 13:30 – 20:59 same-day -> Shift B (14:00 - 22:00 shift entry zone)
             # B1 only applies when crossing midnight; same-day late evening stays as B
             return ("B", False, "B")
         else:                           # >= 21:00 or < 05:30 (Shift C night shift)
@@ -519,6 +523,66 @@ class AttendanceProcessor:
         )
 
     # =========================================================================
+    # SECTION 4B — Single punch classification
+    # =========================================================================
+
+    def _classify_single_punch(self, punch_time_str, base_row, emp_punches_for_date, r_date, all_emp_punches=None):
+        """
+        Classify a lone unpaired punch as 'login' or 'logout'.
+
+        Priority 1: Raw Data authority
+          - If base_row has First Check In = punch_time and no Last Check Out -> 'login'
+          - If base_row has Last Check Out = punch_time and no First Check In -> 'logout'
+
+        Priority 2: Time-of-day heuristics
+          - punch hour >= 21:00 -> 'login' (C-shift start)
+          - punch hour < 09:00  -> 'logout' (orphan C-shift exit or early exit)
+          - normal hours (09:00-20:59) -> 'login' (conservative default)
+
+        Returns: 'login' or 'logout'
+        """
+        if not punch_time_str:
+            return "login"
+
+        ph, pm = self._safe_parse_hm(punch_time_str)
+        if ph is None:
+            return "login"
+
+        # --- Priority 1: Raw Data column role ---
+        if base_row:
+            raw_login  = base_row.get("login")   # First Check In
+            raw_logout = base_row.get("logout")  # Last Check Out
+            has_raw_login  = bool(raw_login  and str(raw_login).strip()  not in ("", "--", "None", "nan"))
+            has_raw_logout = bool(raw_logout and str(raw_logout).strip() not in ("", "--", "None", "nan"))
+
+            if has_raw_login and not has_raw_logout:
+                # Raw Data shows only First Check In -> this is a Login (missing logout)
+                return "login"
+            if has_raw_logout and not has_raw_login:
+                # Raw Data shows only Last Check Out -> this is a Logout (missing login)
+                return "logout"
+            if has_raw_login and has_raw_logout:
+                # Both present in Raw Data but only 1 Total Punch -> match by time
+                rl_h, rl_m = self._safe_parse_hm(raw_login)
+                ro_h, ro_m = self._safe_parse_hm(raw_logout)
+                if rl_h is not None and rl_h == ph and rl_m == pm:
+                    return "login"
+                if ro_h is not None and ro_h == ph and ro_m == pm:
+                    return "logout"
+
+        # --- Priority 2: Time-of-day heuristics ---
+        # Late night (>= 21:00) -> C-shift Login
+        if ph >= 21:
+            return "login"
+
+        # Early morning (< 09:00) -> Orphan exit (C-shift exit or early out)
+        if ph < 9:
+            return "logout"
+
+        # Normal daytime hours (09:00-20:59) -> default to Login (missing checkout)
+        return "login"
+
+    # =========================================================================
     # SECTION 5 — Status determination
     # =========================================================================
 
@@ -530,12 +594,12 @@ class AttendanceProcessor:
             return "Absent", "No punch recorded"
 
         if (login_str is not None and logout_str is None) or (login_str is None and logout_str is not None):
-            status = "Needs Manual Review"
-            remarks_parts.append("Single punch recorded — manual review required")
+            status = "Absent"
+            remarks_parts.append("Less time - Need Manual Review")
             return status, "; ".join(remarks_parts)
         elif hours is None:
-            status = "Invalid Hours"
-            remarks_parts.append("Could not compute working hours")
+            status = "Absent"
+            remarks_parts.append("Less time - Need Manual Review")
             return status, "; ".join(remarks_parts)
 
         # Check for multi-session collapse / implausible duration
@@ -546,6 +610,7 @@ class AttendanceProcessor:
         is_morning_window = ((login_m is not None and 300 <= login_m <= 480) or (logout_m is not None and 300 <= logout_m <= 480))
 
         needs_manual_review = False
+        is_short_hours_absent = False
 
         if hours > 18.0 or (is_morning_window and has_prior_orphan):
             needs_manual_review = True
@@ -554,13 +619,13 @@ class AttendanceProcessor:
             if hours <= 18.0 and (login_str is not None and logout_str is not None):
                 # Long continuous shift (e.g. 06:00 -> 22:00) formed by valid punches
                 needs_manual_review = False
-                remarks_parts.append(f"Continuous Shift ({hours:.2f}h)")
             else:
                 needs_manual_review = True
                 remarks_parts.append(f"Unusually long session ({hours:.2f}h) — Needs Manual Review")
-        elif hours < 4.0:
-            needs_manual_review = True
-            remarks_parts.append(f"Unusually short session ({hours:.2f}h) — Needs Manual Review")
+        elif hours < MIN_GENUINE_HOURS:
+            # Short session (< 3.75h) -> Absent with Less time - Need Manual Review
+            is_short_hours_absent = True
+            remarks_parts.append("Less time - Need Manual Review")
 
         if is_ambiguous_shift and shift not in ("Unknown",):
             needs_manual_review = True
@@ -568,23 +633,19 @@ class AttendanceProcessor:
 
         if needs_manual_review:
             status = "Needs Manual Review"
+        elif is_short_hours_absent:
+            status = "Absent"
         else:
-            # Night shifts (C/B1) that cross midnight have a lower Full Day threshold (7h) since
-            # standard 8h night sessions (22:00→06:00) produce real durations of 7.5h-8.5h.
-            is_night = shift in ("C", "B1")
-            effective_full_day = NIGHT_FULL_DAY_HOURS if is_night else FULL_DAY_HOURS
+            effective_full_day = FULL_DAY_HOURS
             if hours >= effective_full_day:
                 status = "Present (Full Day)"
                 if hours >= 12.0:
                     remarks_parts.append(f"Continuous Double Shift ({hours:.2f}h)")
-            elif hours >= HALF_DAY_HOURS:
-                status = "Present (Half Day)"
             else:
-                status = "Short Hours"
-                remarks_parts.append(f"Only {hours:.2f}h recorded")
+                status = "Present (Half Day)"
 
-        # Late check-in detection
-        if login_str is not None and lh is not None:
+        # Late check-in detection (for Present days)
+        if status != "Absent" and login_str is not None and lh is not None:
             late = False
             if shift == "A"         and login_m > (6  * 60 + 15):
                 late = True
@@ -599,7 +660,13 @@ class AttendanceProcessor:
             if late:
                 remarks_parts.append(f"Late Check-in (Shift {shift})")
 
-        remarks = "; ".join(remarks_parts) if remarks_parts else "Normal Attendance"
+        # Deduplicate remarks while preserving order
+        unique_remarks = []
+        for r in remarks_parts:
+            if r and r not in unique_remarks:
+                unique_remarks.append(r)
+
+        remarks = "; ".join(unique_remarks) if unique_remarks else "Normal Attendance"
         return status, remarks
 
     # =========================================================================
@@ -782,6 +849,9 @@ class AttendanceProcessor:
                     if t_norm and ":" in t_norm:
                         h, m = self._safe_parse_hm(t_norm)
                         if h is not None:
+                            # Filter out dummy midnight rollover punches '00:00' (machine placeholder for overnight shifts)
+                            if h == 0 and m == 0:
+                                continue
                             curr_mins = h * 60 + m
                             if last_mins is not None and curr_mins < last_mins:
                                 curr_date = curr_date + timedelta(days=1)
@@ -805,25 +875,72 @@ class AttendanceProcessor:
             lin = r["login"]
             lout = r["logout"]
 
-            if str(emp_id).upper() == "A0004":
-                print(f"[PARSE PUNCHES DEBUG] Reading from RAW_DATA login/logout columns | emp_id={emp_id} | date={r_date} | raw_login='{lin}' | raw_logout='{lout}'")
+            lh, lm = self._safe_parse_hm(lin) if lin else (None, None)
+            oh, om = self._safe_parse_hm(lout) if lout else (None, None)
 
-            if lin:
-                lh, lm = self._safe_parse_hm(lin)
-                if lh is not None:
-                    dtin = datetime(r_date.year, r_date.month, r_date.day, lh, lm)
-                    punches_by_emp.setdefault(emp_id, []).append({
-                        "dt": dtin, "kind": "in", "base_row": r
-                    })
+            if lh is not None:
+                dtin = datetime(r_date.year, r_date.month, r_date.day, lh, lm)
+                punches_by_emp.setdefault(emp_id, []).append({
+                    "dt": dtin, "kind": "in", "base_row": r
+                })
 
-            if lout:
-                oh, om = self._safe_parse_hm(lout)
-                if oh is not None:
-                    dtout = datetime(r_date.year, r_date.month, r_date.day, oh, om)
-                    punches_by_emp.setdefault(emp_id, []).append({
-                        "dt": dtout, "kind": "out", "base_row": r
-                    })
+            if oh is not None:
+                out_date = r_date
+                if lh is not None and (oh * 60 + om) < (lh * 60 + lm):
+                    out_date = r_date + timedelta(days=1)
+                else:
+                    rcd = r.get("raw_cell_data", {})
+                    for ldate_k in ("Logout Date", "LOGOUT DATE", "logout_date", "LogoutDate", "Check-Out Date", "Check-out Date"):
+                        if ldate_k in rcd and rcd[ldate_k]:
+                            parsed_ldate = self._normalize_date(rcd[ldate_k])
+                            if parsed_ldate:
+                                out_date = parsed_ldate
+                                break
+
+                dtout = datetime(out_date.year, out_date.month, out_date.day, oh, om)
+                punches_by_emp.setdefault(emp_id, []).append({
+                    "dt": dtout, "kind": "out", "base_row": r
+                })
         return punches_by_emp
+
+    def _cross_reference_punches_with_raw_rows(self, punches_by_emp, raw_rows):
+        """
+        Cross-reference Total Punches stream against Raw Data row roles.
+        If a punch in Total Punches matches a Raw Data row's explicit Last Check Out
+        (especially when First Check In is blank), tag it as kind='out' with base_row reference.
+        """
+        if not punches_by_emp or not raw_rows:
+            return
+
+        raw_lookup = {}
+        for r in raw_rows:
+            raw_lookup[(str(r["emp_id"]).strip().upper(), r["date"])] = r
+
+        for emp_id, plist in punches_by_emp.items():
+            emp_key = str(emp_id).strip().upper()
+            for p in plist:
+                p_date = p["dt"].date()
+                p_time_str = p["dt"].strftime("%H:%M")
+                r = raw_lookup.get((emp_key, p_date))
+                if r:
+                    r_lout = self._normalize_time_str(r.get("logout"))
+                    r_lin  = self._normalize_time_str(r.get("login"))
+                    if r_lout and r_lout == p_time_str:
+                        if not r_lin or r_lout != r_lin:
+                            p["kind"] = "out"
+                            p["base_row"] = r
+                    if r_lin and r_lin == p_time_str:
+                        p["kind"] = "in"
+                        p["base_row"] = r
+                    # If Raw Data explicitly has a later shift login (hour >= 13 or >= 21) on this date,
+                    # any earlier punch (< 10:00 AM) that is NOT the raw login is an exit/tail swipe
+                    # from the prior shift (or midnight boundary reset), NOT a new shift login!
+                    if r_lin and p_time_str != r_lin:
+                        rl_h, rl_m = self._safe_parse_hm(r_lin)
+                        if rl_h is not None and rl_h >= 13 and p["dt"].hour < 10:
+                            p["kind"] = "out"
+                            p["base_row"] = r
+
 
     def _build_record_from_session(
         self, emp_id, emp_name, gender, dept, r_date,
@@ -895,14 +1012,19 @@ class AttendanceProcessor:
 
         is_single_punch = (login_val is not None and logout_val is None) or (login_val is None and logout_val is not None)
         if is_single_punch:
-            if not single_punch_val:
-                single_punch_val = login_val or logout_val
-            login_val = None
-            logout_val = None
+            # Classify the lone punch as Login or Logout using Raw Data + time-of-day context
+            raw_single_time = single_punch_val or login_val or logout_val
+            punch_role = self._classify_single_punch(raw_single_time, base_row, [], r_date)
+            if punch_role == "login":
+                login_val  = raw_single_time
+                logout_val = None
+            else:
+                login_val  = None
+                logout_val = raw_single_time
             shift = "Unknown"
-            single_punch_display = single_punch_val or "--"
-        else:
-            single_punch_display = single_punch_val if single_punch_val else "--"
+            single_punch_val = raw_single_time
+        # single_punch column always blank (removed from UI, kept for compat)
+        single_punch_display = "--"
 
         if base_row and "raw_cell_data" in base_row:
             rec = dict(base_row["raw_cell_data"])
@@ -917,8 +1039,8 @@ class AttendanceProcessor:
         logout_date_str = logout_date_obj.strftime("%Y-%m-%d") if logout_date_obj else "--"
 
         # Overtime Fallback: only for records that DO have valid working hours
-        # Single punch (Needs Manual Review) records have no valid pair so skip entirely
-        if status != "Needs Manual Review" and overtime_hours_str in ("00:00", "", "--", None):
+        # Single punch records have no valid pair so skip entirely
+        if not is_single_punch and overtime_hours_str in ("00:00", "", "--", None):
             wh_cand = working_hours_str or rec.get("working_hours") or rec.get("Working Hours") or rec.get("WORKING HOURS") or rec.get("totaltime") or rec.get("TOTAL TIME") or rec.get("Total Hours")
             mins = self._parse_wh_to_mins(wh_cand)
             if mins is not None and mins > 480:
@@ -944,11 +1066,11 @@ class AttendanceProcessor:
             elif col_clean in ("logoutdate", "checkoutdate", "lastcheckoutdate"):
                 rec[col_name] = logout_date_str
             elif col_clean in ("totaltime", "totalhours", "totalhrs", "workinghours"):
-                # Always push the computed working_hours_str outward.
-                # For NMR/single-punch records, working_hours_str is "--" and we must NOT
+                # For single-punch or no-punch (absent) records, working_hours_str is "--" and we must NOT
                 # read back the raw Excel pre-filled value — that would produce bogus hours.
-                if status == "Needs Manual Review":
-                    rec[col_name] = "--"  # hard guard: never show raw Excel WH for single punch
+                is_no_punch = (login_val is None and logout_val is None)
+                if is_single_punch or is_no_punch:
+                    rec[col_name] = "--"  # hard guard: never show raw Excel WH for single or no punch
                 elif working_hours_str not in ("--", None, ""):
                     rec[col_name] = working_hours_str
                 else:
@@ -992,7 +1114,10 @@ class AttendanceProcessor:
         weekday_val = base_row["weekday"] if (base_row and "weekday" in base_row) else r_date.strftime("%A")
 
         if status == "Needs Manual Review":
-            punch_status = "Single punch — manual review needed"
+            if "Missing Raw Data" in str(remarks):
+                punch_status = "Missing Raw Data - Needs Manual Review"
+            else:
+                punch_status = "Single punch — manual review needed"
         elif status == "Absent":
             punch_status = "No Punch"
         elif is_overnight:
@@ -1124,6 +1249,9 @@ class AttendanceProcessor:
         if not punches_by_emp and raw_rows:
             punches_by_emp = self._extract_punches_from_raw_rows(raw_rows)
 
+        if punches_by_emp and raw_rows:
+            self._cross_reference_punches_with_raw_rows(punches_by_emp, raw_rows)
+
         emp_groups = {}
         for r in raw_rows:
             emp_groups.setdefault(r["emp_id"], []).append(r)
@@ -1159,10 +1287,13 @@ class AttendanceProcessor:
         else:
             global_date_range = []
 
+        has_raw_data = bool(raw_rows and len(raw_rows) > 0)
+
         for emp_id in sorted(emp_groups.keys(), key=self._emp_sort_key):
             emp_rows = emp_groups[emp_id]
             emp_rows.sort(key=lambda r: r["date"])
             date_to_row = {r["date"]: r for r in emp_rows}
+            is_emp_missing_in_raw = has_raw_data and (not emp_rows)
 
             emp_name = emp_rows[0]["emp_name"] if emp_rows else f"Employee_{emp_id}"
             gender = emp_rows[0]["gender"] if emp_rows else "Unspecified"
@@ -1204,12 +1335,99 @@ class AttendanceProcessor:
             sessions = []
             consumed_punches = set()
 
+            # =================================================================
+            # RAW DATA AUTHORITY PASS
+            # When Raw Data explicitly has BOTH First Check In AND Last Check Out
+            # on the same row, that pair is authoritative — directly create a
+            # session from Raw Data values and consume the matching punches so
+            # the stream loop cannot steal them.
+            # =================================================================
+            for rr in emp_rows:
+                raw_login_str  = rr.get("login")   # e.g. "06:04"
+                raw_logout_str = rr.get("logout")  # e.g. "14:03"
+                if not raw_login_str or not raw_logout_str:
+                    continue
+                lh, lm = self._safe_parse_hm(raw_login_str)
+                oh, om = self._safe_parse_hm(raw_logout_str)
+                if lh is None or oh is None:
+                    continue
+                rr_date = rr["date"]
+                login_mins  = lh * 60 + lm
+                logout_mins = oh * 60 + om
+
+                # Determine logout datetime (may be next day for C-shift overnight)
+                login_dt_auth  = datetime.combine(rr_date, datetime.min.time()).replace(
+                    hour=lh, minute=lm, second=0, microsecond=0)
+                if logout_mins < login_mins:
+                    # Overnight: logout is next day
+                    logout_dt_auth = datetime.combine(
+                        rr_date + timedelta(days=1), datetime.min.time()).replace(
+                        hour=oh, minute=om, second=0, microsecond=0)
+                else:
+                    logout_dt_auth = datetime.combine(rr_date, datetime.min.time()).replace(
+                        hour=oh, minute=om, second=0, microsecond=0)
+
+                gap_auth = logout_dt_auth - login_dt_auth
+                if gap_auth <= timedelta(0):
+                    continue
+
+                # --- Guard A: C-shift same-day short-gap noise swipe ---
+                if lh >= 21 and logout_dt_auth.date() == rr_date and gap_auth < timedelta(hours=4):
+                    continue
+
+                # --- Guard B: Biometric confusion ---
+                both_early_morning = (lh < 9) and (oh < 9)
+                if both_early_morning and (gap_auth > timedelta(hours=16) or gap_auth < timedelta(minutes=30)):
+                    continue
+
+                # --- Guard C: C+A case ---
+                if lh < 9 and oh >= 10:
+                    prev_date = rr_date - timedelta(days=1)
+                    prev_day_c_login = any(
+                        p["dt"].date() == prev_date and p["dt"].hour >= 21 and p["uid"] not in consumed_punches
+                        for p in emp_punches
+                    )
+                    if prev_day_c_login:
+                        for p in emp_punches:
+                            if p["dt"].date() == rr_date and p["dt"].hour < 9 and p["kind"] == "in":
+                                p["kind"] = "stream"
+                                break
+                        continue
+
+                matched_in  = None
+                matched_out = None
+                for p in emp_punches:
+                    if p["uid"] in consumed_punches:
+                        continue
+                    pt = p["dt"]
+                    if matched_in is None and pt.date() == rr_date and pt.hour == lh and pt.minute == lm:
+                        matched_in = p
+                    if matched_out is None and pt.date() == logout_dt_auth.date() and pt.hour == oh and pt.minute == om:
+                        matched_out = p
+
+                if matched_in is None or matched_out is None:
+                    continue
+                if matched_in["uid"] == matched_out["uid"]:
+                    continue
+
+                sessions.append({
+                    "login":  login_dt_auth,
+                    "logout": logout_dt_auth,
+                    "p_in":   matched_in,
+                    "p_out":  matched_out,
+                    "gap":    gap_auth,
+                    "stolen_from_self_paired": False,
+                    "_raw_authority": True,
+                })
+                consumed_punches.add(matched_in["uid"])
+                consumed_punches.add(matched_out["uid"])
+                for p in emp_punches:
+                    if p["uid"] in consumed_punches:
+                        continue
+                    if login_dt_auth < p["dt"] < logout_dt_auth:
+                        consumed_punches.add(p["uid"])
+
             # --- Round 11 (revised): Boundary-Orphan Checkout Check ---
-            # Only skip an early-AM punch if:
-            #   1. It is followed by a SINGLE later same-day punch with gap > 11h (i.e., the two punches
-            #      cannot form a normal same-day session together), AND
-            #   2. There is NOT already a valid same-day pair (2 punches that fit SINGLE_SHIFT_MIN..MAX).
-            # If the same-day gap is within a valid shift range, keep the first punch as a login.
             i = 0
             while i < len(emp_punches):
                 p_in = emp_punches[i]
@@ -1218,28 +1436,16 @@ class AttendanceProcessor:
                     continue
 
                 if p_in["kind"] == "out":
-                    if is_debug_emp:
-                        print(f"[PUNCH-STREAM DEBUG] Step i={i}: Punch {p_in['dt'].strftime('%Y-%m-%d %H:%M')} is kind='out' -> Skip as login candidate")
                     i += 1
                     continue
 
-                # Check if p_in is actually an orphan checkout from a prior session (e.g., 06:18 AM)
-                # followed by a much later punch on the same date (> 11h gap, e.g. 22:10 PM)
-                # But only skip it if the same-day pair gap is NOT in SINGLE_SHIFT_MIN..SINGLE_SHIFT_MAX
-                # (i.e., the two same-day punches cannot form a valid shift themselves)
                 if i + 1 < len(emp_punches):
                     p_next = emp_punches[i + 1]
                     if p_next["uid"] not in consumed_punches and p_in["dt"].date() == p_next["dt"].date():
                         gap_same_day = p_next["dt"] - p_in["dt"]
                         is_valid_same_day_pair = SINGLE_SHIFT_MIN <= gap_same_day <= SINGLE_SHIFT_MAX
-                        # Confirm as orphan checkout via one of:
-                        #   1. kind="out" (raw data explicitly labeled it as logout)
-                        #   2. base_row shows raw logout < raw login (cross-midnight raw row)
-                        #   3. date_to_row shows raw first_check_in > raw last_check_out
-                        #      (e.g., raw row: first_check_in=22:10, last_check_out=06:18)
                         is_confirmed_orphan_out = (p_in["kind"] == "out")
                         if not is_confirmed_orphan_out:
-                            # Check base_row directly
                             br = p_in.get("base_row")
                             raw_login = (br.get("login") if br else None) or (date_to_row.get(p_in["dt"].date(), {}) or {}).get("login")
                             raw_logout = (br.get("logout") if br else None) or (date_to_row.get(p_in["dt"].date(), {}) or {}).get("logout")
@@ -1251,7 +1457,6 @@ class AttendanceProcessor:
                                         is_confirmed_orphan_out = True
                         if (gap_same_day > SINGLE_SHIFT_MAX and p_in["dt"].hour < 10
                                 and not is_valid_same_day_pair and is_confirmed_orphan_out):
-                            print(f"[ROUND 11 BOUNDARY-ORPHAN] emp_id={emp_id} date={p_in['dt'].date()} orphan_checkout={p_in['dt'].strftime('%H:%M')} next_punch={p_next['dt'].strftime('%H:%M')} gap={gap_same_day} -> Skip early AM punch as login candidate")
                             consumed_punches.add(p_in["uid"])
                             i += 1
                             continue
@@ -1260,8 +1465,6 @@ class AttendanceProcessor:
                     i += 1
                     continue
 
-                # Universal Guard: Early AM punch (hour < 5 AM, e.g. 03:06/03:07 AM) following a late-night C-shift login (>=21:00)
-                # on the previous day is a mid-shift swipe during the C-shift, NOT a new same-day login candidate!
                 if p_in["dt"].hour < 5:
                     prev_date_c_login = any(
                         p["dt"].date() == (p_in["dt"].date() - timedelta(days=1))
@@ -1269,42 +1472,41 @@ class AttendanceProcessor:
                         for p in emp_punches
                     )
                     if prev_date_c_login:
-                        if is_debug_emp:
-                            print(f"[C-SHIFT MID-SWIPE GUARD] emp_id={emp_id} date={p_in['dt'].date()} punch={p_in['dt'].strftime('%H:%M')} is mid-shift swipe for prev day C-login -> Skip as login candidate")
                         consumed_punches.add(p_in["uid"])
                         i += 1
                         continue
 
-                if p_in["kind"] == "out" and not (p_in["dt"].hour >= 21 or p_in["dt"].hour <= 4):
-                    if is_debug_emp:
-                        print(f"[PUNCH-STREAM DEBUG] Step i={i}: Punch {p_in['dt'].strftime('%Y-%m-%d %H:%M')} is kind='out' -> Skip as login candidate")
+                if p_in["kind"] == "out" and not (p_in["dt"].hour >= 21):
                     i += 1
                     continue
 
                 login_dt = p_in["dt"]
                 login_str = login_dt.strftime("%H:%M")
-                if is_debug_emp:
-                    print(f"[PUNCH-STREAM DEBUG] Step i={i}: Pending Login = {login_dt.strftime('%Y-%m-%d %H:%M')}")
 
-                # --- Priority 1: Self-Out check (Pair with same raw row's explicit check-out if valid) ---
+                # Priority 1: Self-Out check
                 self_out = None
                 br = p_in.get("base_row")
                 if br and br.get("login") and br.get("logout"):
-                    for candidate in emp_punches:
-                        if candidate["uid"] not in consumed_punches and candidate.get("base_row") is br and candidate["kind"] == "out":
-                            cand_logout_dt = candidate["dt"]
-                            if cand_logout_dt < login_dt:
-                                cand_logout_dt = cand_logout_dt + timedelta(days=1)
-                            if (cand_logout_dt - login_dt) <= timedelta(hours=13, minutes=30):
-                                self_out = candidate
+                    _br_lh, _br_lm = self._safe_parse_hm(br.get("login"))
+                    _br_oh, _br_om = self._safe_parse_hm(br.get("logout"))
+                    _skip_self_out = False
+                    if _br_lh is not None and _br_oh is not None and _br_lh >= 21:
+                        _lo_mins = _br_oh * 60 + _br_om
+                        _li_mins = _br_lh * 60 + _br_lm
+                        if _lo_mins > _li_mins and (_lo_mins - _li_mins) < 240:
+                            _skip_self_out = True
+                    if not _skip_self_out:
+                        for candidate in emp_punches:
+                            if candidate["uid"] not in consumed_punches and candidate.get("base_row") is br and candidate["kind"] == "out":
+                                cand_logout_dt = candidate["dt"]
+                                if cand_logout_dt > login_dt and (cand_logout_dt - login_dt) <= timedelta(hours=13, minutes=30):
+                                    self_out = candidate
                                 break
 
                 if self_out:
                     logout_dt = self_out["dt"]
                     if logout_dt < login_dt:
                         logout_dt = logout_dt + timedelta(days=1)
-                    if is_debug_emp:
-                        print(f"[PUNCH-STREAM DEBUG]   -> Paired via self_out with {logout_dt.strftime('%Y-%m-%d %H:%M')} (same base_row)")
                     sessions.append({
                         "login": login_dt,
                         "logout": logout_dt,
@@ -1318,7 +1520,7 @@ class AttendanceProcessor:
                     i += 1
                     continue
 
-                # --- Priority 2: Same-Day Break-Punch Merging Check (MUST run before cross-midnight stealing) ---
+                # Priority 2: Same-Day Break-Punch Merging
                 def _is_cross_midnight_raw_out(p_item):
                     if p_item["kind"] == "out" and p_item.get("base_row"):
                         br_in = p_item["base_row"].get("login")
@@ -1329,13 +1531,25 @@ class AttendanceProcessor:
                     return False
 
                 def _is_late_night_login(p_item):
-                    # A late night punch (hour >= 21 or hour < 5) is a night shift entry, EXCEPT when login_dt
-                    # is a daytime/afternoon login (05:00–16:00) and the same-day gap is 3–18 hours.
                     if p_item["dt"].hour >= 21 or p_item["dt"].hour < 5:
                         if 5 <= login_dt.hour <= 16:
                             gap_same_day = p_item["dt"] - login_dt
                             if timedelta(hours=3) <= gap_same_day <= timedelta(hours=18):
-                                return False  # Valid same-day logout for daytime/afternoon login
+                                CSHIFT_MIN = timedelta(hours=6)
+                                CSHIFT_MAX = timedelta(hours=11)
+                                for p_next in emp_punches:
+                                    if p_next["uid"] in consumed_punches:
+                                        continue
+                                    if p_next["uid"] == p_item["uid"]:
+                                        continue
+                                    if p_next["dt"].date() != (p_item["dt"].date() + timedelta(days=1)):
+                                        continue
+                                    if not (5 <= p_next["dt"].hour < 9):
+                                        continue
+                                    gap_to_next = p_next["dt"] - p_item["dt"]
+                                    if CSHIFT_MIN <= gap_to_next <= CSHIFT_MAX:
+                                        return True
+                                return False
                         return True
                     return False
 
@@ -1350,18 +1564,12 @@ class AttendanceProcessor:
 
                 if len(same_date_punches) >= 2:
                     span = same_date_punches[-1]["dt"] - same_date_punches[0]["dt"]
-                    punch_strs = [p["dt"].strftime("%H:%M") for p in same_date_punches]
-
-                    # Round 18 Rule: 2 or more punches on the same date with span <= 18 hours form ONE session (first=login, last=logout, middle=ignored breaks)
                     max_allowed_same_day_span = timedelta(hours=18)
                     if SINGLE_SHIFT_MIN <= span <= max_allowed_same_day_span:
                         first_p = same_date_punches[0]
                         last_p = same_date_punches[-1]
                         break_punches = same_date_punches[1:-1]
                         ignored_break_strs = [p["dt"].strftime("%H:%M") for p in break_punches]
-
-                        if is_debug_emp:
-                            print(f"[BREAK-MERGE CHECK] emp_id={emp_id} date={login_dt.date()} punches={punch_strs} span={span} -> MERGE SUCCESS: Login {first_p['dt'].strftime('%H:%M')} + Logout {last_p['dt'].strftime('%H:%M')}")
 
                         sessions.append({
                             "login": first_p["dt"],
@@ -1377,8 +1585,7 @@ class AttendanceProcessor:
                         i += 1
                         continue
 
-                # --- Priority 3: Continuous Double Shift (B+C) Check ---
-                # Afternoon login (13:30–16:00) with next-day early AM punch (05:00–07:30) within 14–18 hours
+                # Priority 3: Continuous Double Shift (B+C) Check
                 h_in, m_in = self._safe_parse_hm(login_str)
                 if h_in is not None and (13 * 60 + 30 <= h_in * 60 + m_in <= 16 * 60):
                     has_same_day_night_login = any(
@@ -1391,12 +1598,16 @@ class AttendanceProcessor:
                             if (candidate["uid"] not in consumed_punches
                                 and candidate["dt"].date() == (login_dt.date() + timedelta(days=1))
                                 and 5 <= candidate["dt"].hour < 8):
+                                if candidate.get("kind") == "in":
+                                    continue
+                                cand_br = candidate.get("base_row")
+                                if cand_br and cand_br.get("logout"):
+                                    continue
                                 gap_cand = candidate["dt"] - login_dt
                                 if timedelta(hours=14) <= gap_cand <= MAX_SESSION_HOURS:
                                     candidate_am = candidate
                                     break
                     if candidate_am:
-                        # Day 2 Companion Guard: Check if candidate_am on Day 2 forms a valid daytime shift with another unconsumed punch on Day 2
                         day2_unconsumed = [
                             p for p in emp_punches
                             if p["dt"].date() == candidate_am["dt"].date()
@@ -1412,12 +1623,9 @@ class AttendanceProcessor:
                                 break
 
                         if has_day2_valid_shift:
-                            if is_debug_emp:
-                                print(f"[CONTINUOUS DOUBLE SHIFT B+C]   -> SKIP candidate_am {candidate_am['dt'].strftime('%Y-%m-%d %H:%M')}: Day 2 has its own complete daytime shift!")
                             candidate_am = None
 
                     if candidate_am:
-                        # Collect intermediate punches on Day 1
                         day1_intermediates = [
                             p for p in emp_punches
                             if p["dt"].date() == login_dt.date()
@@ -1444,10 +1652,7 @@ class AttendanceProcessor:
                         i += 1
                         continue
 
-
-
-
-                # Stream pairing / Orphan candidate search
+                # Stream pairing
                 found_pair = False
                 j = i + 1
                 while j < len(emp_punches):
@@ -1466,28 +1671,17 @@ class AttendanceProcessor:
                             continue
 
                     if p_out["dt"].date() == login_dt.date() and p_out["dt"].hour >= 21:
-                        # A same-day 21:xx punch could be either:
-                        #   (a) a valid B-shift logout for an afternoon login on a CLEAN 2-punch day → allow
-                        #   (b) a C-shift entry (on 3+ punch days, afternoon = noise, 21:xx = C-start) → skip
-                        #
-                        # Priority rule:
-                        #   - If current login is afternoon (13:00-20:59) AND gap is valid B-shift (6-11h)
-                        #     AND the login's date has exactly 2 total raw punches (13:xx + 21:xx clean pair)
-                        #     → 21:xx IS the B-shift logout. Allow pairing.
-                        #   - Otherwise: check if 21:xx has a natural C-exit on next day and skip it.
                         current_login_hour = login_dt.hour
                         current_gap = p_out["dt"] - login_dt
                         is_bshift_login = 13 <= current_login_hour <= 20
                         is_bshift_gap = timedelta(hours=6) <= current_gap <= timedelta(hours=11)
-                        # Count total raw punches on login's date (all emp_punches on that date, incl. consumed)
                         total_day_punches = sum(
                             1 for p in emp_punches
                             if p["dt"].date() == login_dt.date()
                         )
                         if is_bshift_login and is_bshift_gap and total_day_punches <= 2:
-                            pass  # Clean 2-punch B-shift day: allow 13:xx→21:xx pairing
+                            pass
                         else:
-                            # Check if p_out (21:xx) has a natural C-shift exit on the next day
                             CSHIFT_MIN = timedelta(hours=6)
                             CSHIFT_MAX = timedelta(hours=11)
                             natural_c_exit = None
@@ -1505,51 +1699,46 @@ class AttendanceProcessor:
                                     natural_c_exit = p_next
                                     break
                             if natural_c_exit is not None:
-                                if is_debug_emp:
-                                    print(f"[PUNCH-STREAM DEBUG]   -> Candidate [{j}] {logout_dt.strftime('%Y-%m-%d %H:%M')}: "
-                                          f"Has natural C-shift exit {natural_c_exit['dt'].strftime('%Y-%m-%d %H:%M')} -> SKIP as C-entry")
                                 j += 1
                                 continue
 
                     if logout_dt.date() > login_dt.date():
+                        if p_out.get("kind") == "in":
+                            _cex_br = p_out.get("base_row")
+                            _allow_c_exit = False
+                            if _cex_br and 5 <= logout_dt.hour < 9 and login_dt.hour >= 21:
+                                _cex_logout = _cex_br.get("logout")
+                                if _cex_logout:
+                                    _cex_oh, _ = self._safe_parse_hm(_cex_logout)
+                                    if _cex_oh is not None and _cex_oh < 9:
+                                        _allow_c_exit = True
+                                else:
+                                    _allow_c_exit = True
+                            if not _allow_c_exit:
+                                j += 1
+                                continue
                         if not self.is_night_shift_start(login_str):
-                            if is_debug_emp:
-                                print(f"[PUNCH-STREAM DEBUG]   -> Candidate [{j}] {logout_dt.strftime('%Y-%m-%d %H:%M')}: Daytime login {login_str} not eligible for cross-midnight chaining -> DISCARD")
                             j += 1
                             continue
-                        # If login is afternoon/evening, do not cross-midnight pair if a LATER late night login (>=21:00) exists on the same date
-                        if any(p["uid"] != p_in["uid"] and p["uid"] not in consumed_punches and p["dt"].date() == login_dt.date() and p["dt"].hour >= 21 for p in emp_punches):
-                            if is_debug_emp:
-                                print(f"[PUNCH-STREAM DEBUG]   -> Candidate [{j}] {logout_dt.strftime('%Y-%m-%d %H:%M')}: Same date has a late night login (>=21:00) -> DISCARD cross-midnight for afternoon login")
+                        if login_dt.hour < 21 and any(p["uid"] != p_in["uid"] and p["uid"] not in consumed_punches and p["dt"].date() == login_dt.date() and p["dt"].hour >= 21 for p in emp_punches):
                             j += 1
                             continue
 
-                        # Guard: Single evening punch (17:00–20:59) should NOT pair cross-midnight with a Day 2 morning login (08:00+) when gap > 12.5h
-                        # Example: D0008 16-Jul 18:13 and 17-Jul 08:50 (gap 14h 37m) are two separate single punches, NOT a B1 shift.
                         h_log_check, _ = self._safe_parse_hm(login_str) if login_str else (None, None)
                         if h_log_check is not None and 17 <= h_log_check <= 20:
                             if logout_dt.hour >= 8 and gap > timedelta(hours=12, minutes=30):
-                                if is_debug_emp:
-                                    print(f"[PUNCH-STREAM DEBUG]   -> Candidate [{j}] {logout_dt.strftime('%Y-%m-%d %H:%M')}: Evening punch {login_str} to Day 2 morning login gap {gap} > 12.5h -> DISCARD cross-midnight pairing")
                                 j += 1
                                 continue
 
                     if gap < MIN_SESSION_GAP:
-                        if is_debug_emp:
-                            print(f"[PUNCH-STREAM DEBUG]   -> Candidate [{j}] {logout_dt.strftime('%Y-%m-%d %H:%M')}: gap {gap} < MIN_SESSION_GAP (150m) -> DISCARD AS NOISE")
                         consumed_punches.add(p_out["uid"])
                         j += 1
                         continue
 
-                    # For late-night logins (21:xx - 05:xx), cap pairing window at SINGLE_SHIFT_MAX (11h)
-                    # For afternoon/evening logins, allow up to MAX_SESSION_HOURS (18h) for double shifts
                     effective_max = MAX_SESSION_HOURS
                     h_log, _ = self._safe_parse_hm(login_str) if login_str else (None, None)
                     if h_log is not None and (h_log >= 21 or h_log < 5):
-                        effective_max = SINGLE_SHIFT_MAX  # Late night shift: max ~11h
-                        # If candidate p_out on Day 2 is a mid-shift punch (hour < 5 or gap < 6h)
-                        # AND a standard C-shift exit exists on Day 2 in 05:00-09:00 AM window,
-                        # skip p_out as a mid-shift break punch! (e.g. A0094 21:58 to 06:12, skipping 03:07)
+                        effective_max = SINGLE_SHIFT_MAX
                         if logout_dt.date() > login_dt.date() and (logout_dt.hour < 5 or gap < timedelta(hours=6)):
                             has_later_c_exit = any(
                                 p["uid"] not in consumed_punches
@@ -1558,28 +1747,35 @@ class AttendanceProcessor:
                                 for p in emp_punches
                             )
                             if has_later_c_exit:
-                                if is_debug_emp:
-                                    print(f"[PUNCH-STREAM DEBUG]   -> Candidate [{j}] {logout_dt.strftime('%Y-%m-%d %H:%M')}: mid-shift punch (hour < 5 / gap < 6h) with later 05:00-09:00 C-exit -> SKIP as mid-shift break")
                                 j += 1
                                 continue
 
+                        if logout_dt.date() > login_dt.date() and (5 <= logout_dt.hour < 9):
+                            day2_raw_row = date_to_row.get(logout_dt.date(), {})
+                            day2_raw_logout = day2_raw_row.get("logout") if day2_raw_row else None
+                            day2_lo_h, day2_lo_m = self._safe_parse_hm(day2_raw_logout) if day2_raw_logout else (None, None)
+                            day2_is_afternoon_logout = (day2_lo_h is not None and day2_lo_h >= 10)
+
+                            if not day2_is_afternoon_logout:
+                                has_better_exit = False
+                                for k in range(j + 1, len(emp_punches)):
+                                    p_next = emp_punches[k]
+                                    if p_next["uid"] in consumed_punches:
+                                        continue
+                                    if p_next["dt"].date() != logout_dt.date():
+                                        break
+                                    if 5 <= p_next["dt"].hour < 9:
+                                        gap_between = p_next["dt"] - p_out["dt"]
+                                        if gap_between <= timedelta(minutes=30):
+                                            has_better_exit = True
+                                            break
+                                if has_better_exit:
+                                    j += 1
+                                    continue
+
                     if gap <= effective_max:
-                        # Guard: do NOT steal p_out if it is the START of a valid daytime Shift A/B
-                        # pair on Day 2. This prevents B-shift afternoon logins (13:00-20:59) on Day 1
-                        # from stealing Day 2's morning login away from its own same-day daytime shift.
-                        #
-                        # NOTE: C-shift logins (21:00+) are intentionally EXCLUDED from this guard
-                        # because they legitimately chain to next-day early-AM exits (e.g. 21:53 → 06:04
-                        # is correct C-shift even if 06:04 is followed by a B-shift 13:51 on same day).
-                        #
-                        # This guard applies ONLY when:
-                        #   - login (Day 1) is in the B/B1 afternoon zone: 13:00 – 20:59
-                        #   - p_out (candidate from Day 2) is a daytime morning punch (05:00 – 09:59)
-                        #   - p_out has exactly one same-day companion that is an afternoon logout (>= 14:00)
-                        #   - Together they form a valid A/B shift pair (SINGLE_SHIFT_MIN … SINGLE_SHIFT_MAX)
                         if h_log is not None and 13 <= h_log <= 20:
                             p_out_hour = p_out["dt"].hour
-                            # Only apply guard if p_out is in the A-shift morning zone (05:00–09:59)
                             if 5 <= p_out_hour < 10:
                                 same_day_companions = [
                                     p for p in emp_punches
@@ -1590,17 +1786,10 @@ class AttendanceProcessor:
                                 if len(same_day_companions) == 1:
                                     companion = same_day_companions[0]
                                     companion_hour = companion["dt"].hour
-                                    # companion must be an afternoon logout (>= 14:00)
                                     if companion_hour >= 14:
                                         companion_gap = companion["dt"] - p_out["dt"]
-                                        # Use 14h ceiling (not SINGLE_SHIFT_MAX=11h) so that
-                                        # long General/overtime pairs like 08:51→20:18 (11h27m)
-                                        # are still recognised as valid same-day pairs and protected.
                                         is_valid_daytime_pair = SINGLE_SHIFT_MIN <= companion_gap <= timedelta(hours=14)
                                         if is_valid_daytime_pair:
-                                            if is_debug_emp:
-                                                print(f"[NIGHT-STEAL-GUARD] emp_id={emp_id} login={login_dt.strftime('%Y-%m-%d %H:%M')} "
-                                                      f"candidate={logout_dt.strftime('%Y-%m-%d %H:%M')} is Day 2 daytime A/B login -> SKIP steal")
                                             j += 1
                                             continue
 
@@ -1608,10 +1797,9 @@ class AttendanceProcessor:
                         c_br = p_out.get("base_row")
                         if p_out["kind"] == "in" and c_br and c_br.get("login") and c_br.get("logout"):
                             if c_br.get("date") != (br.get("date") if br else None):
-                                stolen_from_self_paired = True
-
-                        if is_debug_emp:
-                            print(f"[PUNCH-STREAM DEBUG]   -> PAIR SUCCESS: Login {login_dt.strftime('%Y-%m-%d %H:%M')} + Logout {logout_dt.strftime('%Y-%m-%d %H:%M')} (gap {gap})")
+                                c_br_oh, _ = self._safe_parse_hm(c_br.get("logout"))
+                                if c_br_oh is None or c_br_oh >= 9:
+                                    stolen_from_self_paired = True
 
                         sessions.append({
                             "login": login_dt,
@@ -1623,7 +1811,6 @@ class AttendanceProcessor:
                         })
                         consumed_punches.add(p_in["uid"])
                         consumed_punches.add(p_out["uid"])
-                        # Systemic Fix: Consume all unconsumed intermediate break punches between login_dt and logout_dt
                         intermediate_punches = [
                             p for p in emp_punches
                             if p["uid"] not in consumed_punches
@@ -1637,15 +1824,9 @@ class AttendanceProcessor:
                         i = j + 1
                         break
                     else:
-                        if is_debug_emp:
-                            print(f"[PUNCH-STREAM DEBUG]   -> Candidate [{j}] {logout_dt.strftime('%Y-%m-%d %H:%M')}: gap {gap} > effective_max ({effective_max}) -> STOP SEARCH")
                         break
 
-
-
                 if not found_pair:
-                    if is_debug_emp:
-                        print(f"[PUNCH-STREAM DEBUG]   -> NO PAIR FOUND: Login {login_dt.strftime('%Y-%m-%d %H:%M')} -> Missing Punch-Out")
                     sessions.append({
                         "login": login_dt,
                         "logout": None,
@@ -1675,7 +1856,25 @@ class AttendanceProcessor:
             for r_date in all_dates:
                 base_row = date_to_row.get(r_date)
                 day_sessions = sessions_by_date.get(r_date, [])
-                session = day_sessions[0] if day_sessions else None
+                session = None
+                if day_sessions:
+                    if base_row and base_row.get("login"):
+                        raw_log = self._normalize_time_str(base_row.get("login"))
+                        for ds in day_sessions:
+                            if ds["login"].strftime("%H:%M") == raw_log:
+                                session = ds
+                                break
+                    if session is None:
+                        session = day_sessions[0]
+
+                is_date_missing_in_raw = is_emp_missing_in_raw or (has_raw_data and base_row is None)
+
+                has_raw_punch_for_date = bool(
+                    base_row and (
+                        (base_row.get("login") and str(base_row.get("login")).strip() not in ("", "--", "None", "nan", "NaT"))
+                        or (base_row.get("logout") and str(base_row.get("logout")).strip() not in ("", "--", "None", "nan", "NaT"))
+                    )
+                )
 
                 if session:
                     handled_sessions.add(id(session))
@@ -1693,14 +1892,44 @@ class AttendanceProcessor:
                         is_overnight = False
                         logout_date_obj = None
 
-                    rec = self._build_record_from_session(
-                        emp_id, emp_name, gender, dept, r_date,
-                        login_val, logout_val, is_overnight, logout_date_obj,
-                        base_row, global_stats, raw_headers, col_map_raw,
-                        has_prior_orphan=session.get("stolen_from_self_paired", False),
-                        session_obj=session
-                    )
-                    results.append(rec)
+                    # If Raw Data sheet exists but this employee/date had empty/missing login & logout in Raw Data:
+                    # System calculates times from Total Punches, but safely flags for Manual Review
+                    if has_raw_data and not has_raw_punch_for_date:
+                        explicit_logout_date = logout_date_obj if is_overnight and logout_date_obj else None
+                        session_calc = self._compute_session(login_val, logout_val, r_date, explicit_logout_date)
+                        raw_shift = base_row.get("shift") if base_row else None
+                        shift, is_amb, label = self.determine_shift(
+                            login_val, logout_date=session_calc["logout_date"], login_date=r_date, logout_time_str=logout_val, raw_shift=raw_shift
+                        )
+                        st = "Needs Manual Review"
+                        rem = "Missing Raw Data - Needs Manual Review"
+                        if session.get("ignored_breaks"):
+                            rem = f"Missing Raw Data - Needs Manual Review; Break punch ignored: {', '.join(session['ignored_breaks'])}"
+
+                        rec = self._build_record_dict(
+                            base_row, emp_id, emp_name, gender, dept, r_date,
+                            login_val, logout_val, session_calc["logout_date"],
+                            session_calc["working_hours_str"], session_calc["working_hours_decimal"],
+                            session_calc["is_overnight"], shift, st, rem, raw_headers, col_map_raw,
+                            overtime_hours_str=session_calc.get("overtime_hours_str", "00:00"),
+                            overtime_hours_decimal=session_calc.get("overtime_hours_decimal", 0.0),
+                            session_obj=session,
+                            single_punch_val=None
+                        )
+                        rec["punch_status"] = "Missing Raw Data - Needs Manual Review"
+                        rec["PUNCH STATUS"] = "Missing Raw Data - Needs Manual Review"
+                        rec["Missing Shift Details"] = "Missing Raw Data - Needs Manual Review"
+                        rec["MISSING SHIFT DETAILS"] = "Missing Raw Data - Needs Manual Review"
+                        results.append(rec)
+                    else:
+                        rec = self._build_record_from_session(
+                            emp_id, emp_name, gender, dept, r_date,
+                            login_val, logout_val, is_overnight, logout_date_obj,
+                            base_row, global_stats, raw_headers, col_map_raw,
+                            has_prior_orphan=session.get("stolen_from_self_paired", False),
+                            session_obj=session
+                        )
+                        results.append(rec)
                 elif r_date not in handled_dates:
                     handled_dates.add(r_date)
                     unconsumed_for_date = [p for p in emp_punches if p["dt"].date() == r_date and p["uid"] not in consumed_punches]
@@ -1724,7 +1953,33 @@ class AttendanceProcessor:
                                 if is_consumed or dt_lout in consumed_logout_dts:
                                     logout_val = None
 
-                        if login_val is not None or logout_val is not None or unconsumed_for_date:
+                        if has_raw_data and not has_raw_punch_for_date:
+                            single_time = login_val or logout_val or (unconsumed_for_date[0]["dt"].strftime("%H:%M") if unconsumed_for_date else None)
+                            if single_time:
+                                punch_role = self._classify_single_punch(single_time, base_row, unconsumed_for_date, r_date)
+                                if punch_role == "login":
+                                    login_val  = single_time
+                                    logout_val = None
+                                else:
+                                    login_val  = None
+                                    logout_val = single_time
+                            st = "Needs Manual Review"
+                            rem = "Missing Raw Data - Needs Manual Review"
+                            rec = self._build_record_dict(
+                                base_row, emp_id, emp_name, gender, dept, r_date,
+                                login_val, logout_val, None,
+                                "--", None,
+                                False, "Unknown", st, rem, raw_headers, col_map_raw,
+                                overtime_hours_str="00:00",
+                                overtime_hours_decimal=0.0,
+                                single_punch_val=single_time
+                            )
+                            rec["punch_status"] = "Missing Raw Data - Needs Manual Review"
+                            rec["PUNCH STATUS"] = "Missing Raw Data - Needs Manual Review"
+                            rec["Missing Shift Details"] = "Missing Raw Data - Needs Manual Review"
+                            rec["MISSING SHIFT DETAILS"] = "Missing Raw Data - Needs Manual Review"
+                            results.append(rec)
+                        elif login_val is not None or logout_val is not None or unconsumed_for_date:
                             raw_shift = base_row.get("shift") if base_row else None
                             if not raw_shift and base_row and "raw_cell_data" in base_row:
                                 rcd = base_row["raw_cell_data"]
@@ -1732,11 +1987,16 @@ class AttendanceProcessor:
 
                             single_time = login_val or logout_val or (unconsumed_for_date[0]["dt"].strftime("%H:%M") if unconsumed_for_date else None)
                             if (login_val is not None and logout_val is None) or (login_val is None and logout_val is not None) or unconsumed_for_date:
-                                login_val = None
-                                logout_val = None
+                                punch_role = self._classify_single_punch(single_time, base_row, unconsumed_for_date, r_date)
+                                if punch_role == "login":
+                                    login_val  = single_time
+                                    logout_val = None
+                                else:
+                                    login_val  = None
+                                    logout_val = single_time
                                 shift = "Unknown"
-                                st = "Needs Manual Review"
-                                rem = "Single punch recorded — manual review required"
+                                st = "Absent"
+                                rem = "Less time - Need Manual Review"
                                 session_calc = {
                                     "logout_date": None,
                                     "working_hours_str": "--",
@@ -1789,13 +2049,40 @@ class AttendanceProcessor:
                     is_overnight = (logout_dt.date() > login_dt.date()) if logout_dt else False
                     logout_date_obj = logout_dt.date() if logout_dt else None
 
-                    rec = self._build_record_from_session(
-                        emp_id, emp_name, gender, dept, r_date,
-                        login_val, logout_val, is_overnight, logout_date_obj,
-                        None, global_stats, raw_headers, col_map_raw,
-                        session_obj=session
-                    )
-                    results.append(rec)
+                    if has_raw_data:
+                        explicit_logout_date = logout_date_obj if is_overnight and logout_date_obj else None
+                        session_calc = self._compute_session(login_val, logout_val, r_date, explicit_logout_date)
+                        shift, is_amb, label = self.determine_shift(
+                            login_val, logout_date=session_calc["logout_date"], login_date=r_date, logout_time_str=logout_val
+                        )
+                        st = "Needs Manual Review"
+                        rem = "Missing Raw Data - Needs Manual Review"
+                        if session.get("ignored_breaks"):
+                            rem = f"Missing Raw Data - Needs Manual Review; Break punch ignored: {', '.join(session['ignored_breaks'])}"
+
+                        rec = self._build_record_dict(
+                            None, emp_id, emp_name, gender, dept, r_date,
+                            login_val, logout_val, session_calc["logout_date"],
+                            session_calc["working_hours_str"], session_calc["working_hours_decimal"],
+                            session_calc["is_overnight"], shift, st, rem, raw_headers, col_map_raw,
+                            overtime_hours_str=session_calc.get("overtime_hours_str", "00:00"),
+                            overtime_hours_decimal=session_calc.get("overtime_hours_decimal", 0.0),
+                            session_obj=session,
+                            single_punch_val=None
+                        )
+                        rec["punch_status"] = "Missing Raw Data - Needs Manual Review"
+                        rec["PUNCH STATUS"] = "Missing Raw Data - Needs Manual Review"
+                        rec["Missing Shift Details"] = "Missing Raw Data - Needs Manual Review"
+                        rec["MISSING SHIFT DETAILS"] = "Missing Raw Data - Needs Manual Review"
+                        results.append(rec)
+                    else:
+                        rec = self._build_record_from_session(
+                            emp_id, emp_name, gender, dept, r_date,
+                            login_val, logout_val, is_overnight, logout_date_obj,
+                            None, global_stats, raw_headers, col_map_raw,
+                            session_obj=session
+                        )
+                        results.append(rec)
 
         self.last_diagnostics["session_pairing_stats"] = global_stats
         self.last_diagnostics["overnight_chained_count"] = global_stats.get("overnight_chained", 0)
@@ -1912,13 +2199,15 @@ class AttendanceProcessor:
         logout_col      = col_map_raw.get("logout")  or "LAST CHECK OUT"
 
         final_cols = list(info_cols)
-        for c in (wday_col, date_col, login_col, logout_date_col, logout_col, "SINGLE PUNCH"):
+        for c in (wday_col, date_col, login_col, logout_date_col, logout_col):
+            # SINGLE PUNCH removed — lone punches now appear in Login or Logout column
             if c not in final_cols:
                 final_cols.append(c)
         for c in trailing_cols:
             if c not in final_cols:
                 final_cols.append(c)
-        for c in ("Shift", "Working Hours", "Overtime Hours", "Status", "PUNCH STATUS"):
+        for c in ("Shift", "Working Hours", "Overtime Hours", "Status"):
+            # PUNCH STATUS removed — status column already covers this information
             if c not in final_cols:
                 final_cols.append(c)
 
