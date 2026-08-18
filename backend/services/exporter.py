@@ -629,7 +629,11 @@ class AttendanceExporter:
 
         # ── Sheet 3: Manual Review ────────────────────────────────────────────
         ws3 = wb.create_sheet("Manual Review")
-        nmr_records = [r for r in records if "manual review" in str(cls._get_val(r, "status", "")).lower()]
+        nmr_records = [
+            r for r in records
+            if "manual review" in str(cls._get_val(r, "status", "")).lower()
+            or "manual review" in str(cls._get_val(r, "remarks", "")).lower()
+        ]
         cls._write_daily_detail_sheet(ws3, nmr_records, columns)
 
         buffer = BytesIO()
@@ -672,11 +676,12 @@ class AttendanceExporter:
         ws.freeze_panes = "A2"
 
         # ── Status → fill/font mapping ────────────────────────────────────────
-        def _row_style(status):
+        def _row_style(status, remarks=""):
             st = str(status or "").lower()
-            if "manual review" in st: return cls._FILL_YELLOW, cls._FONT_YELLOW
-            if "half day"      in st: return cls._FILL_ORANGE, cls._FONT_ORANGE
+            rem = str(remarks or "").lower()
             if "absent"        in st: return cls._FILL_RED,    cls._FONT_RED
+            if "manual review" in st or "manual review" in rem: return cls._FILL_YELLOW, cls._FONT_YELLOW
+            if "half day"      in st: return cls._FILL_ORANGE, cls._FONT_ORANGE
             if "overnight"     in st or "c shift" in st: return cls._FILL_PURPLE, cls._FONT_PURPLE
             if "present"       in st: return cls._FILL_GREEN,  cls._FONT_GREEN
             return None, None
@@ -687,7 +692,8 @@ class AttendanceExporter:
 
         for row_i, rec in enumerate(records, 2):
             status     = cls._get_val(rec, "status", "")
-            fill, font = _row_style(status)
+            remarks    = cls._get_val(rec, "remarks", "")
+            fill, font = _row_style(status, remarks)
             plain_fill = _ALT_ODD if row_i % 2 == 0 else _ALT_EVEN
 
             for col_i, (_, key, _, align_tag) in enumerate(DETAIL_COLS, 1):

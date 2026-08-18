@@ -16,7 +16,7 @@ start "SmartExcel Frontend (Port 3000)" cmd /k "cd /d %~dp0frontend && npm run d
 timeout /t 2 /nobreak >nul
 
 echo ========================================================
-echo  SmartExcel is ready! Opening http://localhost:3000 ...
+echo  SmartExcel is ready! Opening http://localhost:5173 ...
 echo ========================================================
-start http://localhost:3000
+start http://localhost:5173
 

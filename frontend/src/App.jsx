@@ -63,6 +63,10 @@ export default function App() {
           const whDec = Number(r.working_hours_decimal || 0);
           const isOtTime = otStr && otStr !== '00:00' && otStr !== '--' && otStr !== '0';
           if (!isOtTime && otDec <= 0 && whDec <= 8.0 && r.status !== 'Overtime' && !(r.remarks && String(r.remarks).includes('Overtime'))) return false;
+        } else if (selectedStatus === 'Needs Manual Review') {
+          const st = String(r.status || '').toLowerCase();
+          const rem = String(r.remarks || '').toLowerCase();
+          if (!st.includes('manual review') && !rem.includes('manual review')) return false;
         } else {
           if (r.status !== selectedStatus) return false;
         }
@@ -122,7 +126,11 @@ export default function App() {
     const late_login = allProcessedRecords.filter(r => r.status === 'Late Login' || (r.remarks && String(r.remarks).includes('Late'))).length;
     const missing_logout = allProcessedRecords.filter(r => r.status === 'Missing Logout').length;
     const missing_login = allProcessedRecords.filter(r => r.status === 'Missing Login').length;
-    const needs_manual_review = allProcessedRecords.filter(r => r.status === 'Needs Manual Review').length;
+    const needs_manual_review = allProcessedRecords.filter(r => {
+      const st = String(r.status || '').toLowerCase();
+      const rem = String(r.remarks || '').toLowerCase();
+      return st.includes('manual review') || rem.includes('manual review');
+    }).length;
     const overtime = allProcessedRecords.filter(r => {
       const otStr = r.overtime_hours || r['Overtime Hours'] || r['OVERTIME HOURS'] || r.overtime || '';
       const otDec = Number(r.overtime_hours_decimal || 0);

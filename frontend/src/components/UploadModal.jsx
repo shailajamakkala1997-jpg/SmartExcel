@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { Upload, X, FileSpreadsheet, CheckCircle2, AlertTriangle, RefreshCw, Layers, Plus } from 'lucide-react';
+import { Upload, X, FileSpreadsheet, CheckCircle2, AlertTriangle, RefreshCw, Layers, Plus, ArrowLeftRight } from 'lucide-react';
 import axios from 'axios';
 
 export default function UploadModal({ isOpen, onClose, onSuccess }) {
@@ -30,6 +30,12 @@ export default function UploadModal({ isOpen, onClose, onSuccess }) {
     return true;
   };
 
+  const swapFiles = () => {
+    const temp = file;
+    setFile(totalPunchesFile);
+    setTotalPunchesFile(temp);
+  };
+
   const handleFilesAdded = (fileList) => {
     setError(null);
     setDone(false);
@@ -40,19 +46,16 @@ export default function UploadModal({ isOpen, onClose, onSuccess }) {
     if (files.length === 0) return;
 
     if (files.length === 1) {
-      const f = files[0];
-      const nameLower = f.name.toLowerCase();
-      if (nameLower.includes('punch') && file) {
-        setTotalPunchesFile(f);
+      if (file && !totalPunchesFile) {
+        setTotalPunchesFile(files[0]);
       } else {
-        setFile(f);
+        setFile(files[0]);
       }
     } else {
-      // 2 or more files dropped at once
-      const tp = files.find(f => f.name.toLowerCase().includes('punch'));
-      const raw = files.find(f => f !== tp) || files[0];
-      setFile(raw);
-      if (tp) setTotalPunchesFile(tp);
+      // 2 or more files selected/dropped:
+      // Strictly 1st file = Raw Data Sheet, 2nd file = Total Punches Sheet
+      setFile(files[0]);
+      setTotalPunchesFile(files[1]);
     }
   };
 
@@ -66,7 +69,7 @@ export default function UploadModal({ isOpen, onClose, onSuccess }) {
 
   const handleUpload = async () => {
     if (!file) {
-      setError('Please select at least one main Excel or CSV file.');
+      setError('Please select at least 1st sheet (Raw Data Excel/CSV file).');
       return;
     }
     setUploading(true);
@@ -217,14 +220,45 @@ export default function UploadModal({ isOpen, onClose, onSuccess }) {
 
               {/* Selected Files List */}
               {(file || totalPunchesFile) && (
-                <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: -4 }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: '#0A2113', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                      Assigned Sheets (Order-Based)
+                    </span>
+                    {file && totalPunchesFile && (
+                      <button
+                        onClick={swapFiles}
+                        type="button"
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 4,
+                          fontSize: 11,
+                          fontWeight: 700,
+                          color: '#007334',
+                          background: '#EBF5ED',
+                          border: '1px solid #B3E6C4',
+                          borderRadius: 6,
+                          padding: '3px 8px',
+                          cursor: 'pointer'
+                        }}
+                        title="Swap 1st and 2nd Sheet assignments"
+                      >
+                        <ArrowLeftRight style={{ width: 12, height: 12 }} /> Swap 1st & 2nd
+                      </button>
+                    )}
+                  </div>
+
+                  {/* 1st File: Raw Data */}
                   {file && (
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', background: '#F0F9F3', border: '1px solid #B3E6C4', borderRadius: 8 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', background: '#F0F9F3', border: '1.5px solid #009E49', borderRadius: 8 }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                        <FileSpreadsheet style={{ width: 16, height: 16, color: '#009E49' }} />
+                        <div style={{ background: '#009E49', color: '#FFF', fontSize: 10, fontWeight: 800, padding: '2px 6px', borderRadius: 4 }}>
+                          1st Sheet
+                        </div>
                         <div>
                           <div style={{ fontSize: 12, fontWeight: 800, color: '#007334' }}>{file.name}</div>
-                          <div style={{ fontSize: 10, color: '#556C5D' }}>Primary File (Raw Data / Workbook) · {(file.size / 1024).toFixed(1)} KB</div>
+                          <div style={{ fontSize: 11, color: '#2B663F', fontWeight: 600 }}>Raw Data Sheet (Attendance Details) · {(file.size / 1024).toFixed(1)} KB</div>
                         </div>
                       </div>
                       <button
@@ -237,13 +271,16 @@ export default function UploadModal({ isOpen, onClose, onSuccess }) {
                     </div>
                   )}
 
+                  {/* 2nd File: Total Punches */}
                   {totalPunchesFile ? (
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', background: '#F0F9F3', border: '1px solid #B3E6C4', borderRadius: 8 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', background: '#F4F7FB', border: '1.5px solid #0284C7', borderRadius: 8 }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                        <Layers style={{ width: 16, height: 16, color: '#009E49' }} />
+                        <div style={{ background: '#0284C7', color: '#FFF', fontSize: 10, fontWeight: 800, padding: '2px 6px', borderRadius: 4 }}>
+                          2nd Sheet
+                        </div>
                         <div>
-                          <div style={{ fontSize: 12, fontWeight: 800, color: '#007334' }}>{totalPunchesFile.name}</div>
-                          <div style={{ fontSize: 10, color: '#556C5D' }}>Total Punches Report · {(totalPunchesFile.size / 1024).toFixed(1)} KB</div>
+                          <div style={{ fontSize: 12, fontWeight: 800, color: '#0369A1' }}>{totalPunchesFile.name}</div>
+                          <div style={{ fontSize: 11, color: '#0369A1', fontWeight: 600 }}>Total Punches Sheet (Biometric Punch Stream) · {(totalPunchesFile.size / 1024).toFixed(1)} KB</div>
                         </div>
                       </div>
                       <button
@@ -260,13 +297,13 @@ export default function UploadModal({ isOpen, onClose, onSuccess }) {
                       style={{
                         display: 'flex',
                         alignItems: 'center',
-                        justify: 'center',
+                        justifyContent: 'center',
                         gap: 6,
                         padding: '8px 12px',
                         background: '#FFFFFF',
-                        border: '1px dashed #009E49',
+                        border: '1px dashed #0284C7',
                         borderRadius: 8,
-                        color: '#00873D',
+                        color: '#0284C7',
                         fontSize: 12,
                         fontWeight: 600,
                         cursor: 'pointer'
@@ -274,7 +311,7 @@ export default function UploadModal({ isOpen, onClose, onSuccess }) {
                       id="add-total-punches-btn"
                     >
                       <Plus style={{ width: 14, height: 14 }} />
-                      Add Separate Total Punches File (Optional)
+                      Add 2nd Sheet: Total Punches File (Optional)
                     </button>
                   )}
                 </div>
