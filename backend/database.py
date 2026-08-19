@@ -10,7 +10,8 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
 # Default to SQLite for easy zero-config local execution, support PostgreSQL via env var
-SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./attendance.db")
+default_db = "sqlite:////tmp/attendance.db" if os.getenv("VERCEL") else "sqlite:///./attendance.db"
+SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL", default_db)
 if SQLALCHEMY_DATABASE_URL.startswith("postgres://"):
     SQLALCHEMY_DATABASE_URL = SQLALCHEMY_DATABASE_URL.replace("postgres://", "postgresql://", 1)
 

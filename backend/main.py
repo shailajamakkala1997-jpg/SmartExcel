@@ -1,3 +1,4 @@
+import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from database import engine, Base, SessionLocal
@@ -11,8 +12,8 @@ from io import BytesIO
 from sqlalchemy import inspect, text
 
 # Initialize tables & auto-migrate missing columns
-Base.metadata.create_all(bind=engine)
 try:
+    Base.metadata.create_all(bind=engine)
     inspector = inspect(engine)
     if "attendance_records" in inspector.get_table_names():
         columns = [c["name"] for c in inspector.get_columns("attendance_records")]
