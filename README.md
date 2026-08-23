@@ -5,3 +5,5 @@ uvicorn main:app --reload --port 3000
 
 frontend run command
 npm run dev
+
+
