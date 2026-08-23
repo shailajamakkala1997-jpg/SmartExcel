@@ -171,12 +171,11 @@ const buildMonthlySummary = (records) => {
 
 export const exportToExcelClient = (records, scope = 'filtered', fileName = 'Attendance_Report.xlsx') => {
   try {
-    const lib = (XLSX && XLSX.utils && XLSX.utils.book_new) ? XLSX : (XLSX?.default || XLSX);
-    const wb = lib.utils.book_new();
+    const wb = XLSX.utils.book_new();
 
     // Sheet 1: Daily Detail
     const dailyDetailRows = records.map((rec, idx) => mapToDailyDetailRow(rec, idx));
-    const ws1 = lib.utils.json_to_sheet(dailyDetailRows);
+    const ws1 = XLSX.utils.json_to_sheet(dailyDetailRows);
 
     ws1['!cols'] = [
       { wch: 6 },  // NO.
@@ -196,17 +195,17 @@ export const exportToExcelClient = (records, scope = 'filtered', fileName = 'Att
       { wch: 45 }, // Remarks
     ];
 
-    lib.utils.book_append_sheet(wb, ws1, 'Daily Detail');
+    XLSX.utils.book_append_sheet(wb, ws1, 'Daily Detail');
 
     // Sheet 2: Monthly Summary
     const summaryRows = buildMonthlySummary(records);
-    const ws2 = lib.utils.json_to_sheet(summaryRows);
+    const ws2 = XLSX.utils.json_to_sheet(summaryRows);
     ws2['!cols'] = [
       { wch: 14 }, { wch: 25 }, { wch: 10 }, { wch: 12 }, { wch: 12 },
       { wch: 12 }, { wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 12 },
       { wch: 12 }, { wch: 12 }, { wch: 22 }, { wch: 18 }, { wch: 18 }
     ];
-    lib.utils.book_append_sheet(wb, ws2, 'Monthly Summary');
+    XLSX.utils.book_append_sheet(wb, ws2, 'Monthly Summary');
 
     // Sheet 3: Manual Review
     if (scope === 'full') {
@@ -216,12 +215,12 @@ export const exportToExcelClient = (records, scope = 'filtered', fileName = 'Att
         return st.includes('manual review') || rem.includes('manual review');
       });
       const nmrRows = nmrRecords.map((rec, idx) => mapToDailyDetailRow(rec, idx));
-      const ws3 = lib.utils.json_to_sheet(nmrRows);
+      const ws3 = XLSX.utils.json_to_sheet(nmrRows);
       ws3['!cols'] = ws1['!cols'];
-      lib.utils.book_append_sheet(wb, ws3, 'Manual Review');
+      XLSX.utils.book_append_sheet(wb, ws3, 'Manual Review');
     }
 
-    lib.writeFile(wb, fileName);
+    XLSX.writeFile(wb, fileName);
   } catch (err) {
     console.warn('XLSX export fallback triggered:', err);
     const dailyDetailRows = records.map((rec, idx) => mapToDailyDetailRow(rec, idx));
