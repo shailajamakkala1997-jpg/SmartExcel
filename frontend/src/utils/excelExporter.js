@@ -170,55 +170,79 @@ const buildMonthlySummary = (records) => {
 };
 
 export const exportToExcelClient = (records, scope = 'filtered', fileName = 'Attendance_Report.xlsx') => {
-  const wb = XLSX.utils.book_new();
+  try {
+    const lib = (XLSX && XLSX.utils && XLSX.utils.book_new) ? XLSX : (XLSX?.default || XLSX);
+    const wb = lib.utils.book_new();
 
-  // Sheet 1: Daily Detail
-  const dailyDetailRows = records.map((rec, idx) => mapToDailyDetailRow(rec, idx));
-  const ws1 = XLSX.utils.json_to_sheet(dailyDetailRows);
+    // Sheet 1: Daily Detail
+    const dailyDetailRows = records.map((rec, idx) => mapToDailyDetailRow(rec, idx));
+    const ws1 = lib.utils.json_to_sheet(dailyDetailRows);
 
-  ws1['!cols'] = [
-    { wch: 6 },  // NO.
-    { wch: 14 }, // Emp ID
-    { wch: 25 }, // Employee Name
-    { wch: 18 }, // Department
-    { wch: 10 }, // Gender
-    { wch: 12 }, // Day
-    { wch: 14 }, // Date
-    { wch: 10 }, // Shift
-    { wch: 12 }, // Login
-    { wch: 14 }, // Logout Date
-    { wch: 12 }, // Logout
-    { wch: 14 }, // Working Hours
-    { wch: 14 }, // Overtime Hours
-    { wch: 24 }, // Status
-    { wch: 45 }, // Remarks
-  ];
+    ws1['!cols'] = [
+      { wch: 6 },  // NO.
+      { wch: 14 }, // Emp ID
+      { wch: 25 }, // Employee Name
+      { wch: 18 }, // Department
+      { wch: 10 }, // Gender
+      { wch: 12 }, // Day
+      { wch: 14 }, // Date
+      { wch: 10 }, // Shift
+      { wch: 12 }, // Login
+      { wch: 14 }, // Logout Date
+      { wch: 12 }, // Logout
+      { wch: 14 }, // Working Hours
+      { wch: 14 }, // Overtime Hours
+      { wch: 24 }, // Status
+      { wch: 45 }, // Remarks
+    ];
 
-  XLSX.utils.book_append_sheet(wb, ws1, 'Daily Detail');
+    lib.utils.book_append_sheet(wb, ws1, 'Daily Detail');
 
-  // Sheet 2: Monthly Summary
-  const summaryRows = buildMonthlySummary(records);
-  const ws2 = XLSX.utils.json_to_sheet(summaryRows);
-  ws2['!cols'] = [
-    { wch: 14 }, { wch: 25 }, { wch: 10 }, { wch: 12 }, { wch: 12 },
-    { wch: 12 }, { wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 12 },
-    { wch: 12 }, { wch: 12 }, { wch: 22 }, { wch: 18 }, { wch: 18 }
-  ];
-  XLSX.utils.book_append_sheet(wb, ws2, 'Monthly Summary');
+    // Sheet 2: Monthly Summary
+    const summaryRows = buildMonthlySummary(records);
+    const ws2 = lib.utils.json_to_sheet(summaryRows);
+    ws2['!cols'] = [
+      { wch: 14 }, { wch: 25 }, { wch: 10 }, { wch: 12 }, { wch: 12 },
+      { wch: 12 }, { wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 12 },
+      { wch: 12 }, { wch: 12 }, { wch: 22 }, { wch: 18 }, { wch: 18 }
+    ];
+    lib.utils.book_append_sheet(wb, ws2, 'Monthly Summary');
 
-  // If full export, append Sheet 3: Manual Review
-  if (scope === 'full') {
-    const nmrRecords = records.filter(r => {
-      const st = String(getVal(r, 'status', '')).toLowerCase();
-      const rem = String(getVal(r, 'remarks', '')).toLowerCase();
-      return st.includes('manual review') || rem.includes('manual review');
+    // Sheet 3: Manual Review
+    if (scope === 'full') {
+      const nmrRecords = records.filter(r => {
+        const st = String(getVal(r, 'status', '')).toLowerCase();
+        const rem = String(getVal(r, 'remarks', '')).toLowerCase();
+        return st.includes('manual review') || rem.includes('manual review');
+      });
+      const nmrRows = nmrRecords.map((rec, idx) => mapToDailyDetailRow(rec, idx));
+      const ws3 = lib.utils.json_to_sheet(nmrRows);
+      ws3['!cols'] = ws1['!cols'];
+      lib.utils.book_append_sheet(wb, ws3, 'Manual Review');
+    }
+
+    lib.writeFile(wb, fileName);
+  } catch (err) {
+    console.warn('XLSX export fallback triggered:', err);
+    const dailyDetailRows = records.map((rec, idx) => mapToDailyDetailRow(rec, idx));
+    if (dailyDetailRows.length === 0) return;
+    const headers = Object.keys(dailyDetailRows[0]);
+    const csvLines = [headers.join(',')];
+    dailyDetailRows.forEach(row => {
+      const line = headers.map(h => `"${String(row[h] || '').replace(/"/g, '""')}"`).join(',');
+      csvLines.push(line);
     });
-    const nmrRows = nmrRecords.map((rec, idx) => mapToDailyDetailRow(rec, idx));
-    const ws3 = XLSX.utils.json_to_sheet(nmrRows);
-    ws3['!cols'] = ws1['!cols'];
-    XLSX.utils.book_append_sheet(wb, ws3, 'Manual Review');
+    const csvContent = csvLines.join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fileName.replace(/\.xlsx$/, '.csv');
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }, 2000);
   }
-
-  // Trigger instant client-side file download
-  XLSX.writeFile(wb, fileName);
 };
