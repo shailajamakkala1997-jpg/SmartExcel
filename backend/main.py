@@ -32,19 +32,23 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Enable CORS for frontend integration
-cors_origins_raw = os.getenv("CORS_ORIGINS", "*")
-if cors_origins_raw.strip() == "*":
-    allow_origins = ["*"]
+# Enable CORS for frontend integration with support for credentials & Vercel subdomains
+cors_origins_raw = os.getenv("CORS_ORIGINS", "*").strip()
+if cors_origins_raw == "*" or not cors_origins_raw:
+    allow_origins = []
+    allow_origin_regex = r".*"
 else:
     allow_origins = [origin.strip() for origin in cors_origins_raw.split(",") if origin.strip()]
+    allow_origin_regex = r"https://.*\.vercel\.app"
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allow_origins,
+    allow_origin_regex=allow_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition", "Content-Type", "Content-Length"],
 )
 
 # Include Routers
