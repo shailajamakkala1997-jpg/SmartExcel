@@ -5,6 +5,7 @@ import AttendanceTable from './components/AttendanceTable';
 import UploadModal from './components/UploadModal';
 import axios from 'axios';
 import { Upload, FileSpreadsheet, ArrowRight, CheckCircle2, RefreshCw, X } from 'lucide-react';
+import { exportToExcelClient } from './utils/excelExporter';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
@@ -200,26 +201,6 @@ export default function App() {
     setExportToast(null);
 
     try {
-      // Full export → 3-sheet workbook (Daily Detail + Monthly Summary + Manual Review)
-      // Filtered export → single-sheet with current view
-      const endpoint = scope === 'full'
-        ? '/api/export/excel-multisheet'
-        : '/api/export/excel-direct';
-
-      const response = await axios.post(endpoint, {
-        records: targetRecords,
-        columns: excelColumns
-      }, {
-        responseType: 'blob',
-        timeout: 300000
-      });
-
-      // Verify the response is actually an Excel file (not an error JSON)
-      const contentType = response.headers['content-type'] || '';
-      if (response.data.size === 0 || (!contentType.includes('spreadsheet') && !contentType.includes('octet-stream') && !contentType.includes('zip'))) {
-        throw new Error(`Unexpected response type: ${contentType}`);
-      }
-
       const cleanBaseName = uploadedFileName ? uploadedFileName.replace(/\.[^/.]+$/, '') : 'Attendance_Report';
       let filterTag;
       if (scope === 'full') {
@@ -231,24 +212,9 @@ export default function App() {
       }
       const fileName = `${filterTag}_${cleanBaseName}.xlsx`;
 
-      // Reliable cross-browser blob download
-      const blob = new Blob([response.data], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-      const url = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.setAttribute('download', fileName);
-      link.style.position = 'fixed';
-      link.style.top = '-100px';
-      link.style.left = '-100px';
-      link.style.opacity = '0';
-      document.body.appendChild(link);
-      // Use dispatchEvent for better async context compatibility
-      link.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-
-      setTimeout(() => {
-        if (document.body.contains(link)) document.body.removeChild(link);
-        window.URL.revokeObjectURL(url);
-      }, 5000);
+      // Generate multi-sheet Excel file directly in browser memory
+      // Eliminates 4.5MB Vercel serverless request body limits (413 Content Too Large) & CORS network issues
+      exportToExcelClient(targetRecords, scope, fileName);
 
       setExporting(false);
       const filterDesc = scope === 'full'
@@ -256,7 +222,7 @@ export default function App() {
         : (activeFilterLabel ? `"${activeFilterLabel}" filter` : 'filtered view');
       setExportToast({
         title: `✅ Download Ready — ${fileName}`,
-        message: `${targetRecords.length} records exported (${filterDesc}). Check your Downloads folder or browser download bar!`
+        message: `${targetRecords.length} records exported (${filterDesc}). Check your Downloads folder!`
       });
 
       setTimeout(() => {
@@ -265,7 +231,7 @@ export default function App() {
     } catch (err) {
       console.error('Export error:', err);
       setExporting(false);
-      alert(`Export failed: ${err.message || 'Unknown error'}. Please try again or check console.`);
+      alert(`Export failed: ${err.message || 'Unknown error'}. Please try again.`);
     }
   };
 
