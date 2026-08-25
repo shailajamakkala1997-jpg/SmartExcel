@@ -594,9 +594,7 @@ class AttendanceProcessor:
             return "Absent", "No punch recorded"
 
         if (login_str is not None and logout_str is None) or (login_str is None and logout_str is not None):
-            status = "Absent"
-            remarks_parts.append("Less time - Need Manual Review")
-            return status, "; ".join(remarks_parts)
+            return "Single Punch", "Missed Punch - Need Manual Review"
         elif hours is None:
             status = "Absent"
             remarks_parts.append("Less time - Need Manual Review")

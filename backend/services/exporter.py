@@ -675,26 +675,34 @@ class AttendanceExporter:
         ws.row_dimensions[1].height = 26
         ws.freeze_panes = "A2"
 
-        # ── Status → fill/font mapping ────────────────────────────────────────
-        def _row_style(status, remarks=""):
-            st = str(status or "").lower()
-            rem = str(remarks or "").lower()
-            if "absent"        in st: return cls._FILL_RED,    cls._FONT_RED
-            if "manual review" in st or "manual review" in rem: return cls._FILL_YELLOW, cls._FONT_YELLOW
-            if "half day"      in st: return cls._FILL_ORANGE, cls._FONT_ORANGE
-            if "overnight"     in st or "c shift" in st: return cls._FILL_PURPLE, cls._FONT_PURPLE
-            if "present"       in st: return cls._FILL_GREEN,  cls._FONT_GREEN
-            return None, None
+        # ── Status → font color only (no background fill anywhere) ───────────
+        # Colored font applied to Status column AND Remarks column.
+        # All row backgrounds stay plain white / very-subtle zebra.
+        _STATUS_COL_IDX  = next(
+            (i for i, (hdr, _, _, _) in enumerate(DETAIL_COLS, 1) if hdr == "Status"), 14
+        )
+        _REMARKS_COL_IDX = next(
+            (i for i, (hdr, _, _, _) in enumerate(DETAIL_COLS, 1) if hdr == "Remarks"), 15
+        )
 
-        # ── Alternating plain row fill ────────────────────────────────────────
+        def _status_font(status):
+            st = str(status or "").lower()
+            if "absent"        in st: return Font(name="Calibri", size=10, color="B91C1C", bold=True)
+            if "single punch"  in st: return Font(name="Calibri", size=10, color="C2410C", bold=True)
+            if "manual review" in st: return Font(name="Calibri", size=10, color="B45309", bold=True)
+            if "half day"      in st: return Font(name="Calibri", size=10, color="1D4ED8", bold=True)
+            if "overnight"     in st or "c shift" in st: return Font(name="Calibri", size=10, color="6D28D9", bold=True)
+            if "present"       in st: return Font(name="Calibri", size=10, color="15803D", bold=True)
+            return cls._NRM_FONT
+
+        # ── Alternating plain row fill ──────────────────────────────────────
         _ALT_ODD  = PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")
         _ALT_EVEN = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
 
         for row_i, rec in enumerate(records, 2):
             status     = cls._get_val(rec, "status", "")
-            remarks    = cls._get_val(rec, "remarks", "")
-            fill, font = _row_style(status, remarks)
-            plain_fill = _ALT_ODD if row_i % 2 == 0 else _ALT_EVEN
+            plain_fill   = _ALT_ODD if row_i % 2 == 0 else _ALT_EVEN
+            colored_font = _status_font(status)
 
             for col_i, (_, key, _, align_tag) in enumerate(DETAIL_COLS, 1):
                 if key == "_rownum":
@@ -705,6 +713,7 @@ class AttendanceExporter:
 
                 cell = ws.cell(row=row_i, column=col_i, value=val)
                 cell.border = cls._THIN_BORD
+                cell.fill   = plain_fill
 
                 # Alignment
                 if align_tag == "left_wrap":
@@ -714,14 +723,10 @@ class AttendanceExporter:
                 else:
                     cell.alignment = cls._CENTER
 
-                # Fill & font
-                if fill:
-                    cell.fill = fill
-                    if font:
-                        # Keep font for status rows but normal size
-                        cell.font = font
+                # Colored font on Status + Remarks; plain font on everything else
+                if col_i in (_STATUS_COL_IDX, _REMARKS_COL_IDX):
+                    cell.font = colored_font
                 else:
-                    cell.fill = plain_fill
                     cell.font = cls._NRM_FONT
 
             # Row height — taller for wrapped remarks
