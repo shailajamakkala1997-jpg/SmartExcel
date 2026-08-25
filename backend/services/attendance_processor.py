@@ -1993,8 +1993,8 @@ class AttendanceProcessor:
                                     login_val  = None
                                     logout_val = single_time
                                 shift = "Unknown"
-                                st = "Absent"
-                                rem = "Less time - Need Manual Review"
+                                st = "Single Punch"
+                                rem = "Missed Punch - Need Manual Review"
                                 session_calc = {
                                     "logout_date": None,
                                     "working_hours_str": "--",
