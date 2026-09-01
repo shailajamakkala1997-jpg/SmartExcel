@@ -1378,14 +1378,48 @@ class AttendanceProcessor:
                 if both_early_morning and (gap_auth > timedelta(hours=16) or gap_auth < timedelta(minutes=30)):
                     continue
 
+                # --- Guard D: Consecutive C-shift daily row artifact ---
+                # When Raw Data row has login >= 21:00 and logout < 09:00 on rr_date,
+                # check if (oh, om) actually occurred in the MORNING OF rr_date (as exit for rr_date - 1),
+                # rather than on rr_date + 1.
+                if lh >= 21 and oh < 9:
+                    prev_date = rr_date - timedelta(days=1)
+                    prev_day_c_login = any(
+                        p["dt"].date() == prev_date
+                        and p["dt"].hour >= 21
+                        and p["uid"] not in consumed_punches
+                        and p.get("kind") != "out"
+                        for p in emp_punches
+                    )
+                    morning_punch_on_rr_date = any(
+                        p["dt"].date() == rr_date
+                        and p["dt"].hour == oh
+                        and p["dt"].minute == om
+                        for p in emp_punches
+                    )
+                    if prev_day_c_login and morning_punch_on_rr_date:
+                        continue
+
                 # --- Guard C: C+A case ---
+                # Fires only when a GENUINE C-shift LOGIN (not a B-shift logout) existed
+                # on the previous day at >= 21:00, AND emp_punches actually contains a real
+                # morning punch matching (lh, lm) to serve as that C-shift exit.
                 if lh < 9 and oh >= 10:
                     prev_date = rr_date - timedelta(days=1)
                     prev_day_c_login = any(
-                        p["dt"].date() == prev_date and p["dt"].hour >= 21 and p["uid"] not in consumed_punches
+                        p["dt"].date() == prev_date
+                        and p["dt"].hour >= 21
+                        and p["uid"] not in consumed_punches
+                        and p.get("kind") != "out"   # ← B-shift logouts excluded
                         for p in emp_punches
                     )
-                    if prev_day_c_login:
+                    has_real_morning_punch = any(
+                        p["dt"].date() == rr_date
+                        and p["dt"].hour == lh
+                        and p["dt"].minute == lm
+                        for p in emp_punches
+                    )
+                    if prev_day_c_login and has_real_morning_punch:
                         for p in emp_punches:
                             if p["dt"].date() == rr_date and p["dt"].hour < 9 and p["kind"] == "in":
                                 p["kind"] = "stream"
@@ -1404,7 +1438,79 @@ class AttendanceProcessor:
                         matched_out = p
 
                 if matched_in is None or matched_out is None:
-                    continue
+                    # ─── Pre-Upload Manual Correction Fallback ──────────────────
+                    # Raw row has BOTH login + logout explicitly filled in the raw
+                    # Excel sheet, but no matching punch was found in the Total
+                    # Punches stream.  This happens when the user manually adds the
+                    # missing time directly in the raw Excel before uploading
+                    # (e.g. fills in the blank Last Check Out cell) but does NOT
+                    # update the Total Punches column.
+                    #
+                    # Strategy:
+                    #   1. Do a second pass to consume any real stream punches that
+                    #      happen to match these exact times (avoids double-processing).
+                    #   2. Build synthetic punch references for whichever side is still
+                    #      missing (negative uid → never collides with real uids).
+                    #   3. Consume all real punches that fall inside the session window.
+                    #   4. Append the authoritative session so working hours are
+                    #      computed correctly by _compute_session.
+                    # ────────────────────────────────────────────────────────────
+
+                    # Step 1: second-pass — grab any real punches that match
+                    for p in emp_punches:
+                        if p["uid"] in consumed_punches:
+                            continue
+                        pt = p["dt"]
+                        if matched_in is None and pt.date() == rr_date and pt.hour == lh and pt.minute == lm:
+                            matched_in = p
+                            consumed_punches.add(p["uid"])
+                        elif matched_out is None and pt.date() == logout_dt_auth.date() and pt.hour == oh and pt.minute == om:
+                            matched_out = p
+                            consumed_punches.add(p["uid"])
+                        if matched_in is not None and matched_out is not None:
+                            break
+
+                    # Step 2: build synthetic punch references for still-missing sides
+                    _syn_base = -(len(sessions) + 1) * 1000  # large negative — no uid collision
+                    if matched_in is None:
+                        matched_in = {
+                            "dt":       login_dt_auth,
+                            "kind":     "in",
+                            "base_row": rr,
+                            "uid":      _syn_base - 1,
+                        }
+                    if matched_out is None:
+                        matched_out = {
+                            "dt":       logout_dt_auth,
+                            "kind":     "out",
+                            "base_row": rr,
+                            "uid":      _syn_base - 2,
+                        }
+
+                    # Guard: synthetic in and out should be different objects
+                    if matched_in["uid"] == matched_out["uid"]:
+                        continue
+
+                    # Step 3: consume any real intermediate punches inside the window
+                    for p in emp_punches:
+                        if p["uid"] in consumed_punches:
+                            continue
+                        if login_dt_auth < p["dt"] < logout_dt_auth:
+                            consumed_punches.add(p["uid"])
+
+                    # Step 4: append session — working hours computed by _compute_session later
+                    sessions.append({
+                        "login":  login_dt_auth,
+                        "logout": logout_dt_auth,
+                        "p_in":   matched_in,
+                        "p_out":  matched_out,
+                        "gap":    gap_auth,
+                        "stolen_from_self_paired": False,
+                        "_raw_authority":  True,
+                        "_raw_corrected":  True,   # manually corrected raw Excel
+                    })
+                    continue  # done — skip the normal sessions.append() below
+
                 if matched_in["uid"] == matched_out["uid"]:
                     continue
 
