@@ -68,7 +68,9 @@ async function startBackendIfNeeded() {
   console.log(`\x1b[33m[SmartExcel]\x1b[0m Backend launch initiated. Proceeding...`);
 }
 
-startBackendIfNeeded().catch((err) => {
+try {
+  await startBackendIfNeeded();
+} catch (err) {
   console.error('[SmartExcel] Auto-start backend warning:', err.message);
-});
+}
 
