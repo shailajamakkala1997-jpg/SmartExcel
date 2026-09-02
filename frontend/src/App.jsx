@@ -214,7 +214,7 @@ export default function App() {
 
       // Generate multi-sheet Excel file directly in browser memory
       // Eliminates 4.5MB Vercel serverless request body limits (413 Content Too Large) & CORS network issues
-      exportToExcelClient(targetRecords, scope, fileName);
+      await exportToExcelClient(targetRecords, scope, fileName);
 
       setExporting(false);
       const filterDesc = scope === 'full'
